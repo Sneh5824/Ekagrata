@@ -15,5 +15,8 @@ mp_to_world:
   - [0.0, 0.0, -1.0]
   - [1.0, 0.0, 0.0]
   - [0.0, -1.0, 0.0]
-exposure_auto: null    # null = leave driver setting; true/false to switch auto-exposure
-exposure: null         # null = leave driver setting; DSHOW uses log2(seconds), e.g. -6 ~ 1/64 s
+# Exposure chosen from scripts/camera_probe.py (2026-09-29, laptop webcam, dshow 1280x720 MJPG):
+#   auto-exposure -> 14.96 fps measured (exposure lengthens the frame time), manual -6 -> 29.92 fps measured,
+#   0 duplicate frames, mean brightness 58.0/255 in that scene. Re-run the probe if the lighting changes.
+exposure_auto: false   # null = leave driver setting; true/false to switch auto-exposure
+exposure: -6.0         # null = leave driver setting; DSHOW uses log2(seconds): -6 = 1/64 s

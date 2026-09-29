@@ -218,12 +218,46 @@ Status values: TODO · IN PROGRESS · BLOCKED (reason) · DONE
   M2: landmark->world mapping, 3D joint angles (camera + quaternion paths), filters, derivatives, compute_joints
   ```
 
+### Camera diagnosis before M2 data collection — 2026-09-29 (user-requested task, not a SPEC milestone)
+- Files: new `scripts/camera_probe.py`, `tests/test_camera_probe.py`; modified `configs/camera.yaml`
+  (`exposure_auto: false`, `exposure: -6.0`), `README.md`, `docs/PROGRESS.md`.
+- `uv run python scripts/camera_probe.py --camera 0`: 32 combinations (dshow/msmf × 640x480/1280x720 ×
+  MJPG/default × auto/-5/-6/-7), each 1.5 s warm-up + 3 s measurement; run twice with consistent results.
+  Second run (excerpt; fps MEASURED from perf_counter_ns, dups = frames byte-identical to the previous one):
+  ```
+  dshow 1280x720 MJPG    auto -> 14.96 fps, median 64.2 ms, bright 116.7, dups 0
+  dshow 1280x720 MJPG      -5 -> 29.90 fps, median 32.1 ms, bright  96.8, dups 0
+  dshow 1280x720 MJPG      -6 -> 29.92 fps, median 32.0 ms, bright  58.0, dups 0
+  dshow 1280x720 MJPG      -7 -> 29.91 fps, median 32.1 ms, bright  31.0, dups 0
+  dshow 1280x720 default(YUY2) any exposure -> 9.96-9.98 fps
+  msmf  any size/codec   auto -> 29.76-29.84 fps but median 53.7-56.6 ms and 45 duplicate frames
+  msmf  any size/codec   manual -> 30.04-30.11 fps, dups 0, but driver always reports exposure -6.0
+  ```
+- Diagnosis (from the measurements): the 15 fps cap is auto-exposure — with a manual exposure the same camera
+  delivers ~30 fps of distinct frames; brightness roughly halves per exposure step, so the driver applies it.
+  MSMF + auto pads its output with duplicate frames (only ~half are new images), which a pure fps count would
+  hide. Uncompressed 1280x720 over DSHOW is limited to ~10 fps.
+- Chosen (probe rule: fastest usable, then larger resolution, exposure read back correctly, shorter exposure):
+  dshow, 1280x720, MJPG, `exposure_auto: false`, `exposure: -6.0` (DSHOW log2 s → 1/64 s).
+- Verification through the real recorder with the new config (temp dir):
+  `Frames captured : 148`, `Frames dropped : 0`, `Capture fps : 29.37 (measured from grab timestamps)`,
+  `Detection rate : 100.0 %`; session.json reported `exposure: -6.0`, `fourcc: 'MJPG'`.
+- Tests: `137 passed`; Ruff: `All checks passed!`
+- Limitations: brightness 58.0/255 was measured in the lighting at probe time; darker recording conditions may
+  need exposure -5 (re-run the probe). A 1/64 s exposure still blurs a fast racket/wrist. The probe re-enables
+  auto-exposure at the end, so `check_env.py` (which does not set exposure) will again show ~15 fps; the
+  recorder applies `camera.yaml` exposure itself.
+- Found while verifying (NOT changed, needs your decision): `record_session.py` requires `--camera` or `--video`,
+  so the `device` in `camera.yaml` is never used as a default. Earlier advice that commands without `--camera`
+  use the config was wrong; always pass `--camera 0` for now.
+
 ## Open questions for the user
+- `record_session.py` / `check_axes.py`: make `--camera` optional (default = `camera.yaml` `device`)? Currently
+  `record_session.py` requires `--camera` or `--video`.
 - Git is not initialised in this folder. Should the agent run `git init` (no commit), or will you?
 - 2026-09-29: phone camera tested — Realme 7 via Iriun Webcam over USB is camera index 1. Per the user, the project
   uses the laptop webcam only for now, so `configs/camera.yaml` stays at `device: 0`. User run `check_env.py --camera 1`: `Measured : 30.01 fps over 5.00 s (151 frames)`,
   `Interval ms : mean 33.32, min 26.98, max 40.85, median 33.52`; driver-reported fourcc is not a valid code
   (`'}ë6ä'`, Iriun virtual driver). Resolution/fps are set in the Iriun apps; requested values may be ignored.
-- Laptop webcam (camera 0) is limited to ~15 fps measured. For smash analysis (§1.4) consider the phone as a
-  USB webcam for live use, and 240 fps phone files for offline analysis. Try `exposure_auto: false` +
-  `exposure: -7` in `configs/camera.yaml` with good lighting to see whether the driver honours it.
+- RESOLVED 2026-09-29: laptop webcam ~15 fps was caused by auto-exposure; manual exposure -6 gives ~30 fps
+  measured (see "Camera diagnosis" above).

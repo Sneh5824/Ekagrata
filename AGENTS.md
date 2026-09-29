@@ -10,6 +10,10 @@ Robofest Gujarat 6.0 Grand Finale project. Judges will ask for measured evidence
 - Python **3.12** (MediaPipe supports 3.9–3.12). Environment and deps managed with **uv** (`uv sync`, `uv run ...`).
   Never `pip install` into the global Python. Never create a second venv.
 - Laptop GPU: RTX 4050. Do not assume MediaPipe uses the GPU on Windows.
+- Every text-file open/read/write (`open()`, `Path.read_text`/`write_text`, pandas `read_csv`/`to_csv`,
+  `json.dump`) must pass `encoding="utf-8"` explicitly. Binary modes (`"rb"`, `"wb"`, Parquet) are exempt: they
+  take no encoding.
+- Never delete, move or rename a file you did not create in the current milestone without asking the user first.
 
 ## 2. Source of truth and scope discipline
 - **`docs/SPEC.md` is the source of truth** for architecture, formats and milestones. `docs/PROGRESS.md` records

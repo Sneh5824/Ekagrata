@@ -189,6 +189,6 @@ def read_session(session_dir) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
     """Return (session.json dict, frames table, landmarks table)."""
     d = Path(session_dir)
     meta = json.loads((d / "session.json").read_text(encoding="utf-8"))
-    frames = pd.read_csv(d / FRAMES_CSV, dtype={"pts_ns": "Int64"})
+    frames = pd.read_csv(d / FRAMES_CSV, dtype={"pts_ns": "Int64"}, encoding="utf-8")
     landmarks = pd.read_parquet(d / LANDMARKS_PARQUET)
     return meta, frames, landmarks

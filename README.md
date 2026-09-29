@@ -29,6 +29,13 @@ uv run python scripts/check_env.py --seconds 5
 # options: --camera 0 --seconds 5 --width 1280 --height 720 --fps 60
 ```
 
+## Camera probe
+```powershell
+uv run python scripts/camera_probe.py --camera 0   # measured fps, brightness, duplicates per setting
+```
+Tests backend × resolution × codec × exposure and suggests the fastest usable setting for `configs/camera.yaml`.
+Re-run it when the lighting changes. It re-enables auto-exposure when it finishes.
+
 ## Record a session (M1)
 ```powershell
 uv run python scripts/download_models.py                       # once: PoseLandmarker lite/full/heavy + SHA-256

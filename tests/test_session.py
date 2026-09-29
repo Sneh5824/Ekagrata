@@ -114,6 +114,23 @@ def test_empty_session_is_readable(tmp_path):
     assert list(lms.columns) == landmark_columns()
 
 
+def test_non_ascii_notes_round_trip(tmp_path):
+    notes = "एकाग्रता smash — 90° elbow, ±2000 °/s, π/2, naïve ✓"
+    meta = base_metadata("s1", "a01")
+    meta["notes"] = notes
+    path = create_session(tmp_path, "s1", "a01", meta, date=dt.date(2026, 9, 29))
+    rng = np.random.default_rng(2)
+    with SessionWriter(path) as w:
+        w.add(*make_pair(0, rng))
+        w.finalize({"summary": {"stop_reason": "Ctrl+C — user"}})
+    meta2, frames, _ = read_session(path)
+    assert meta2["notes"] == notes
+    assert meta2["summary"]["stop_reason"] == "Ctrl+C — user"
+    assert len(frames) == 1
+    # The file on disk is valid UTF-8 regardless of the Windows locale code page.
+    json.loads((path / "session.json").read_bytes().decode("utf-8"))
+
+
 def test_session_json_is_valid_json(tmp_path):
     path, _ = new_session(tmp_path)
     json.loads((path / "session.json").read_text(encoding="utf-8"))
