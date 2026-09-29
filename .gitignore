@@ -1,0 +1,8 @@
+.venv/
+data/
+models/
+__pycache__/
+*.parquet
+*.mp4
+.ruff_cache/
+.pytest_cache/

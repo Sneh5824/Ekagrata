@@ -1,0 +1,12 @@
+# Parameters for scripts/compute_joints.py (M2). These are processing CHOICES, not measured results.
+visibility_threshold: 0.5       # MediaPipe landmark visibility below this -> NaN
+max_gap_frames: 3               # fill NaN runs of up to this many frames (linear); longer gaps stay NaN
+butter_cutoff_hz: 5.0           # zero-phase low-pass on landmark positions; must be < half the frame rate
+butter_order: 4
+savgol_window: 7                # samples (odd); at 15 fps this spans ~0.47 s
+savgol_polyorder: 3
+upper_arm_min_flex_deg: 15.0    # SPEC §3.1: upper-arm frame undefined below this elbow flexion
+shoulder_rot_singular_deg: 10.0 # SPEC §3.1: shoulder_rot NaN within this of elev 0 / 180 deg
+one_euro_min_cutoff_hz: 1.0     # online filter for live use (not used by compute_joints)
+one_euro_beta: 0.05
+one_euro_d_cutoff_hz: 1.0

@@ -1,0 +1,19 @@
+# Camera capture configuration (loaded by ekagrata.core.config.load_camera_config).
+# Requested values only: the driver may ignore them. Actual fps is always MEASURED and reported.
+device: 0              # OpenCV index; 0 = laptop webcam (1 = Realme 7 via Iriun, not used for now)
+backend: dshow         # dshow | msmf | any
+width: 1280
+height: 720
+fps: 60
+fourcc: MJPG
+model_variant: full    # lite | full | heavy (PoseLandmarker .task file in models/)
+queue_size: 4          # capture queue; oldest frame dropped when full (drops are counted)
+# MediaPipe world axes (x image-right, y down, z away from camera) -> EKAGRATA world (X, Y, Z up).
+# Rows: X_w = -z_mp (toward camera), Y_w = +x_mp, Z_w = -y_mp. Proper rotation (det = +1).
+# Default for an athlete FACING the camera; confirm with scripts/check_axes.py (M2).
+mp_to_world:
+  - [0.0, 0.0, -1.0]
+  - [1.0, 0.0, 0.0]
+  - [0.0, -1.0, 0.0]
+exposure_auto: null    # null = leave driver setting; true/false to switch auto-exposure
+exposure: null         # null = leave driver setting; DSHOW uses log2(seconds), e.g. -6 ~ 1/64 s
