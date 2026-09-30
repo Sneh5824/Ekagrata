@@ -333,8 +333,17 @@ and generated models.
 
 ### M5 — Blender Digital Twin + UDP live link
 **Goal:** the visual twin: athlete arm + racket + court + shuttle, driven from files or live.
-**[USER]:** install Blender (4.5 LTS or newer) and add it to PATH; the agent checks the version and uses only
-APIs available in that version.
+**Blender version (pinned 2026-09-30 by the user):** Blender **5.0.1** at
+`D:/Video Editing/Blender/new b/blender.exe` (bundled Python **3.11.13**), recorded as `blender_exe` /
+`blender_version` in `configs/blender.yaml` (created in M5-preview). Rules:
+- Target the **Blender 5.0 Python API only**. Every bpy call the agent is not certain about is checked against
+  https://docs.blender.org/api/5.0/ and listed as verified in the milestone plan.
+- Blender-side code (scene scripts, add-on, `blender/tests/`) uses only `bpy` and the Python standard library
+  (no numpy/pandas/mediapipe), and must run on Python 3.11.
+- The add-on must install in 5.0: legacy `bl_info` add-on if 5.0's Install from Disk still accepts it, otherwise
+  the extension format (`blender_manifest.toml`); the plan states which and why.
+- The first implementation step runs `blender --background --python-expr "import bpy, sys;
+  print(bpy.app.version_string, sys.version)"` with `blender_exe` and shows the output.
 **Build:**
 - `blender/scripts/build_scene.py` (run: `blender --background --python … -- --rig generated/rig.json --out
   blender/ekagrata_twin.blend`): armature from `rig.json` (bone rest pose = model zero pose; bone local axes
@@ -351,10 +360,38 @@ APIs available in that version.
   start/stop; never blocks the UI thread.
 - `blender/tests/smoke.py` (headless): builds the scene, applies a known pose, asserts the hand/racket endpoint
   equals Python FK within 1 mm.
-**Tests:** message encode/decode round-trip; smoke test run if Blender is on PATH (skip otherwise, clearly).
+**Tests:** message encode/decode round-trip; headless smoke test with the real `blender_exe` is
+**mandatory** whenever `blender_exe` exists (skip only if the file is missing, with a clear skip reason).
 **Acceptance:** [USER] recorded stroke plays back in Blender; live mode follows the camera IK stream; the add-on
 panel shows measured receive rate and message age.
 **Gate:** Digital Twin driven by real camera data.
+
+---
+
+### M5-preview — Blender raw camera shadow (out-of-order, approved by the user 2026-09-30)
+**Status note:** approved to run before M2–M5 are done. M2 stays IN PROGRESS; M3/M4/M5 stay TODO. This is NOT
+M5 and NOT the Digital Twin.
+**Goal:** live and replayed MediaPipe landmarks drive a stick figure in Blender over UDP, labelled
+**"raw camera shadow"** everywhere.
+**Scope (strict):** Blender **Empties** placed directly at landmark positions (EKAGRATA world, Z up, metres, via
+`vision/landmark_map.py`). No `rig.json`, no armature, no joint rotations, no fixed segment lengths, nothing
+from M3/M4. Same Blender rules as M5 (5.0.1, 5.0 API only, bpy + stdlib only, mandatory headless smoke test).
+**Build:** `configs/blender.yaml` (blender_exe, blender_version, UDP 127.0.0.1:9870, send-rate limit, landmark
+subset: nose, shoulders, elbows, wrists, index, pinky, hips; figure placement offset on court);
+`ekagrata/transport/udp_twin.py` (non-blocking, rate-limited sender, never raises on send failure; JSON
+`{v:1, seq, mode:"landmarks", t_sync_ns, t_send_ns, points:{name:[x,y,z]}, vis:{name:float}}`);
+`scripts/stream_to_blender.py` (`--camera N` live or `--session <path>` real-time replay of
+`cam0_landmarks.parquet`, `--loop`, optional One-Euro, measured summary on exit);
+`blender/scripts/build_preview_scene.py` (court 13.40 × 5.18 m with lines, net 1.524 m, floor, lights, camera,
+one Empty per landmark, stick figure, hitting arm in a distinct colour); `blender/addon/ekagrata_live/` (modal
+TIMER ≈ 60 Hz, drain socket and apply only the newest message, hide vis < 0.5, "EKAGRATA" sidebar tab with
+Start/Stop, port, receive rate, message age, stale/dropped count; socket closed on Stop and on file load);
+`scripts/package_blender_addon.py` (→ `blender/ekagrata_live.zip`); `docs/blender.md` (PowerShell steps).
+**Tests:** message round-trip; sender survives no listener; replay timing on a synthetic parquet (stated
+tolerance); pure-Python keep-newest logic; mandatory headless smoke test with the real `blender_exe`.
+**Acceptance:** [USER] replayed session and live camera visibly drive the raw camera shadow in Blender 5.0.1; the
+panel shows measured receive rate and message age.
+**Later reuse:** M5 may reuse the transport, add-on skeleton and court builder; M5's twin replaces the shadow.
 
 ---
 

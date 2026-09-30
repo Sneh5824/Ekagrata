@@ -11,6 +11,7 @@ The agent updates this file at the end of every milestone. The user commits afte
 | M3 Segmentation, features, labels, shuttle speed | TODO | | |
 | M4 Kinematic model, FK, IK, generators | TODO | | |
 | M5 Blender twin + UDP live link | TODO | | |
+| M5-preview Blender raw camera shadow (out-of-order, user-approved) | IN PROGRESS (built; waiting for [USER] acceptance) | 2026-09-30 | |
 | M6 Protocol, IMU sources, IMU simulator | TODO | | |
 | M7 Sync, calibration, fusion (simulated) | TODO | | |
 | M7b EKF fusion | TODO | | |
@@ -251,6 +252,104 @@ Status values: TODO · IN PROGRESS · BLOCKED (reason) · DONE
   so the `device` in `camera.yaml` is never used as a default. Earlier advice that commands without `--camera`
   use the config was wrong; always pass `--camera 0` for now.
 
+### M5-preview — Blender raw camera shadow — 2026-09-30 (IN PROGRESS: built, waiting for [USER] acceptance)
+Out-of-order milestone approved by the user on 2026-09-30. M2 stays IN PROGRESS; M3/M4/M5 stay TODO. Raw camera
+shadow only: Empties at raw landmark positions; no `rig.json`, no joint rotations, no fixed segment lengths.
+- Blender check (first step after approval), real binary from `configs/blender.yaml`:
+  `blender --background --python-expr "import bpy, sys; print(bpy.app.version_string, sys.version)"` →
+  `5.0.1 3.11.13 (main, Sep 23 2025, 09:08:45) [MSC v.1929 64 bit (AMD64)]`; `--version` → `Blender 5.0.1`,
+  build hash `a3db93c5b259`, branch `blender-v5.0-release`.
+- Add-on format: **legacy `bl_info`**. Evidence from Blender 5.0.1's own source
+  (`5.0/scripts/addons_core/bl_pkg`): Install from Disk (`extensions.package_install_files`) calls
+  `pkg_is_legacy_addon()` (zip without `blender_manifest.toml` whose `.py` contains `bl_info`) → `exec_legacy()`
+  → `preferences.addon_install`. Verified by installing the packaged zip in the real 5.0.1 (test below).
+  Note: `addon_utils.py` in 5.0.1 says `bl_info` will be fully deprecated later; switching means adding a manifest.
+- bpy calls verified against docs.blender.org/api/5.0 and/or the running 5.0.1: see the approved plan.
+  Found: `Material.use_nodes` is deprecated in 5.0 (no effect), so it is not used; `bpy.data.materials.new`
+  creates a Principled BSDF node tree in 5.0.1 (checked at runtime).
+- Files changed:
+  - new: `configs/blender.yaml`, `ekagrata/transport/{__init__,udp_twin}.py`, `scripts/stream_to_blender.py`,
+    `scripts/build_blender_preview.py`, `scripts/package_blender_addon.py`,
+    `blender/scripts/build_preview_scene.py`, `blender/addon/ekagrata_live/{__init__,core}.py`,
+    `blender/tests/{smoke_check,install_check}.py`, `docs/blender.md`, `tests/test_udp_twin.py`,
+    `tests/test_stream_replay.py`, `tests/test_blender_live_core.py`, `tests/test_blender_smoke.py`
+  - modified: `ekagrata/core/config.py` (+`BlenderConfig`, `load_blender_config`), `tests/test_config.py`,
+    `pyproject.toml` (ruff `per-file-target-version` py311 for `blender/**`; pytest marker `timing`),
+    `.gitignore` (+`blender/*.blend`, `*.blend1`, `blender/ekagrata_live.zip`), `docs/SPEC.md` (M5 Blender pin,
+    new M5-preview section), `docs/PROGRESS.md`
+  - generated (gitignored): `blender/ekagrata_preview.blend`, `blender/ekagrata_live.zip`
+- Tests: `207 passed in 50.16s` (was 137; +70) · Ruff: `All checks passed!`
+- Tests → requirement:
+  - message round-trip (0.1 mm rounding), NaN left out + strict JSON, invalid messages rejected →
+    `test_udp_twin.py`; sender survives no listener (200 sends) and never raises on `OSError`,
+    `BlockingIOError`, `ConnectionResetError` → `test_sender_survives_no_listener`,
+    `test_send_failure_never_raises`.
+  - replay timing: fake-clock scheduler (authoritative) → `test_scheduler_fake_clock_exact`,
+    `test_scheduler_loop_and_stop`; real clock, marked `@pytest.mark.timing` (runs by default; tolerance: never
+    early by > 1 ms, median lateness ≤ 5 ms, max ≤ 30 ms, span within ±30 ms; failure message prints the
+    measured numbers). Measured: `emit-time lateness min 0.124 ms; scheduler lateness median 0.002, p95 0.003,
+    max 0.005; span error -0.003 ms`. Synthetic (SIMULATED) parquet end-to-end through a real loopback socket →
+    `test_main_replay_end_to_end`.
+  - keep-newest logic (pure Python, factored out of bpy) incl. duplicates/stale, seq gaps, sender restart,
+    2 s windows, whole-run summary, replay capture age = n/a, `link_transform` known answers →
+    `test_blender_live_core.py`.
+  - mandatory headless smoke test with the real `blender_exe` → `test_blender_smoke.py` (3 tests):
+    `EKAGRATA_VERSION 5.0.1 3.11.13`; `ok: all 42 expected objects exist`, court 13.40 m / 5.18 m, net 1.524 m,
+    hitting-arm colours, add-on registered, every Empty at offset + point (1e-6 m), links span their landmarks
+    (1e-5 m), vis < 0.5 hidden and re-shown, real-socket drain `3 valid + 1 bad`, `only the newest applied`,
+    `EKAGRATA SMOKE OK`; packaged zip installed via the legacy operator into a temporary
+    `BLENDER_USER_RESOURCES` → `EKAGRATA INSTALL OK`.
+- Agent end-to-end runs in the Blender 5.0.1 GUI (real modal TIMER operator, started from a scratch script;
+  not part of the test suite):
+  - Replay of the real session `2026-09-29_swings01_002` (read only), `--loop --seconds 12`: sender
+    `Messages sent : 358`, `Send rate : 29.83 Hz`, `Replay lateness : median 0.006 ms, p95 0.009 ms,
+    max 0.033 ms`, `Rate-limited : 1` (two recorded frames closer than 1/60 s). Blender: `received 225,
+    applied 225, superseded 0, stale 0, lost (seq gaps) 0, bad 0`; `last 2 s: rx 30.0 Hz`; `age since send:
+    median 8.5 / p95 15.7 ms`; capture age `n/a in replay`; nose and l_shoulder moved off the placeholder;
+    r_wrist and l_hip hidden (in that recording r_wrist has vis ≥ 0.5 in only 19.2 % of frames, hips in 0 %).
+    Socket closed on Stop.
+  - Live `--camera 0 --seconds 12` (nobody in front of the camera): `Frames processed : 99`,
+    `Frames with pose : 0`, `Capture fps : 8.19 (measured from grab timestamps)`; Blender: `received 57,
+    applied 57, lost 0`; `age since send: median 7.0 / p95 14.7 ms`; **`age since capture: median 144.5 /
+    p95 152.0 ms`** (capture → Blender apply, excluding display; includes MediaPipe inference). All landmarks
+    hidden (no pose).
+- Acceptance (SPEC M5-preview):
+  - [x] Blender 5.0.1 pinned, bpy + stdlib only, headless smoke test with the real binary passes (above).
+  - [x] Panel shows measured receive rate and message age (send + capture, median/p95 over 2 s); printed on Stop.
+  - [ ] [USER] replayed session visibly drives the raw camera shadow in Blender 5.0.1.
+  - [ ] [USER] live camera visibly drives it (with you in frame).
+- [USER] steps (see `docs/blender.md`):
+  1. `uv run python scripts/build_blender_preview.py`; `uv run python scripts/package_blender_addon.py`;
+     install `blender\ekagrata_live.zip` via Preferences → Add-ons → ⌄ → Install from Disk, enable it.
+  2. Open `blender\ekagrata_preview.blend`, N-panel → EKAGRATA → Start.
+  3. `uv run python scripts/stream_to_blender.py --session data/sessions/2026-09-29_swings01_002 --loop`:
+     confirm the figure moves; paste the panel values and the script summary.
+  4. `uv run python scripts/stream_to_blender.py --camera 0` standing in frame: confirm it follows you; press
+     Stop and paste the console summary (Window → Toggle System Console).
+- Deviations from the approved plan:
+  - The message has one extra field, `source: "real" | "replay"`, needed so Blender can label replay capture
+    age as not meaningful (amendment 1). All other fields are exactly as specified.
+  - The landmark subset is 13 names (nose + both shoulders, elbows, wrists, index, pinky, hips); the plan said
+    11 by miscount.
+  - Stop also prints whole-run median/p95 (in addition to the last 2 s), because the 2 s window is empty when
+    the sender stopped more than 2 s before Stop.
+- Known limitations:
+  - **Axis mapping unverified until check_axes passes** (shown in the scene label, panel, console, docs).
+  - Raw camera shadow only: segment lengths vary frame to frame; the figure's origin is MediaPipe's hip
+    midpoint, lifted by a display offset (Z = 1.0 m), so it floats (no legs/feet in the subset).
+  - The live run measured 8.19 fps capture (vs 29.9 fps on 2026-09-29 with the same config); cause not
+    investigated in this milestone (lighting and Blender GUI load at the same time are candidates) — unverified.
+  - Hips are invisible in the existing recordings (framing), so shoulder–hip links stay hidden there.
+  - Ages across processes are valid only on the same machine (system-wide QueryPerformanceCounter).
+  - The add-on's modal operator is exercised only by the agent GUI runs above, not by the automated suite
+    (a modal TIMER needs a window; the headless tests call the same apply/drain/keep-newest functions).
+- Suggested commit message (after the [USER] steps pass):
+  ```
+  M5-preview: Blender 5.0.1 raw camera shadow (UDP sender, replay/live streamer, scene builder, live add-on)
+
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  ```
+
 ## Open questions for the user
 - `record_session.py` / `check_axes.py`: make `--camera` optional (default = `camera.yaml` `device`)? Currently
   `record_session.py` requires `--camera` or `--video`.
@@ -261,3 +360,8 @@ Status values: TODO · IN PROGRESS · BLOCKED (reason) · DONE
   (`'}ë6ä'`, Iriun virtual driver). Resolution/fps are set in the Iriun apps; requested values may be ignored.
 - RESOLVED 2026-09-29: laptop webcam ~15 fps was caused by auto-exposure; manual exposure -6 gives ~30 fps
   measured (see "Camera diagnosis" above).
+- 2026-09-30 (M5-preview): live capture measured 8.19 fps during the Blender GUI test (29.9 fps measured on
+  2026-09-29 with the same config). Re-run `scripts/check_env.py --camera 0` in your normal lighting, with and
+  without Blender open, to see whether it reproduces?
+- 2026-09-30 (M5-preview): OK to keep the extra message field `source` ("real"/"replay")? It is the only way for
+  Blender to know that capture age is not meaningful in replay.

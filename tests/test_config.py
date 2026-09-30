@@ -3,9 +3,11 @@ from pathlib import Path
 import pytest
 
 from ekagrata.core.config import (
+    BlenderConfig,
     CameraConfig,
     ConfigError,
     JointsConfig,
+    load_blender_config,
     load_camera_config,
     load_joints_config,
 )
@@ -119,3 +121,48 @@ def test_invalid_yaml(tmp_path):
 def test_top_level_must_be_mapping(tmp_path):
     with pytest.raises(ConfigError, match="mapping"):
         load_camera_config(write(tmp_path, "- 1\n- 2\n"))
+
+
+BLENDER_VALID = """
+blender_exe: "C:/Blender/blender.exe"
+blender_version: "5.0.1"
+udp_host: 127.0.0.1
+udp_port: 9870
+send_rate_max_hz: 60
+hitting_side: right
+landmarks: [nose, r_wrist]
+placement_offset_m: [-4, 0, 1.0]
+"""
+
+
+def write_blender(tmp_path, text):
+    p = tmp_path / "blender.yaml"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_repo_blender_yaml_loads():
+    cfg = load_blender_config(REPO / "configs" / "blender.yaml")
+    assert isinstance(cfg, BlenderConfig) and cfg.udp_host == "127.0.0.1" and cfg.blender_version == "5.0.1"
+
+
+def test_blender_valid_minimal(tmp_path):
+    cfg = load_blender_config(write_blender(tmp_path, BLENDER_VALID))
+    assert cfg.landmarks == ("nose", "r_wrist") and cfg.placement_offset_m == (-4.0, 0.0, 1.0)
+    assert cfg.send_rate_max_hz == 60.0
+
+
+@pytest.mark.parametrize("old,new,match", [
+    ("udp_host: 127.0.0.1", "udp_host: 0.0.0.0", "loopback"),
+    ("udp_port: 9870", "udp_port: 80", "udp_port"),
+    ("send_rate_max_hz: 60", "send_rate_max_hz: 0", "send_rate_max_hz"),
+    ("hitting_side: right", "hitting_side: both", "hitting_side"),
+    ("landmarks: [nose, r_wrist]", "landmarks: [nose, r_knee]", "landmarks"),
+    ("landmarks: [nose, r_wrist]", "landmarks: [nose, nose]", "landmarks"),
+    ("placement_offset_m: [-4, 0, 1.0]", "placement_offset_m: [0, 1]", "placement_offset_m"),
+    ("placement_offset_m: [-4, 0, 1.0]", "placement_offset_m: [0, 1, true]", "placement_offset_m"),
+    ('blender_version: "5.0.1"', "", "missing"),
+])
+def test_blender_invalid(tmp_path, old, new, match):
+    with pytest.raises(ConfigError, match=match):
+        load_blender_config(write_blender(tmp_path, BLENDER_VALID.replace(old, new)))

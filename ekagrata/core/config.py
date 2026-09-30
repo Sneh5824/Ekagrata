@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from ekagrata.vision.landmark_map import validate_rotation
+from ekagrata.vision.landmark_map import LM, validate_rotation
 
 BACKENDS = ("dshow", "msmf", "any")
 MODEL_VARIANTS = ("lite", "full", "heavy")
@@ -123,3 +123,44 @@ def load_joints_config(path) -> JointsConfig:
         _require(path, key, data[key], number, lambda v: v > 0, "must be > 0")
     _require(path, "one_euro_beta", data["one_euro_beta"], number, lambda v: v >= 0, "must be >= 0")
     return JointsConfig(**{k: (float(v) if isinstance(v, float) else v) for k, v in data.items()})
+
+
+HITTING_SIDES = ("right", "left")
+
+
+@dataclass(frozen=True)
+class BlenderConfig:
+    """Blender raw camera shadow (M5-preview): Blender binary, UDP link and figure placement."""
+
+    blender_exe: str  # path to blender.exe (pinned version below)
+    blender_version: str  # expected bpy.app.version_string, e.g. "5.0.1"
+    udp_host: str  # loopback address the sender targets
+    udp_port: int
+    send_rate_max_hz: float  # sender rate limit
+    hitting_side: str  # one of HITTING_SIDES
+    landmarks: tuple  # landmark names (keys of ekagrata.vision.landmark_map.LM)
+    placement_offset_m: tuple  # (3,) display offset of the figure on the court, metres
+
+
+def load_blender_config(path) -> BlenderConfig:
+    data = load_yaml(path)
+    _check_keys(path, data, BlenderConfig)
+    for key in ("blender_exe", "blender_version"):
+        _require(path, key, data[key], str, lambda v: v.strip() != "", "must not be empty")
+    _require(path, "udp_host", data["udp_host"], str, lambda v: v.startswith("127."),
+             "must be a loopback address (127.x.x.x)")
+    _require(path, "udp_port", data["udp_port"], int, lambda v: 1024 <= v <= 65535, "must be in 1024..65535")
+    _require(path, "send_rate_max_hz", data["send_rate_max_hz"], (int, float), lambda v: v > 0, "must be > 0")
+    _require(path, "hitting_side", data["hitting_side"], str, lambda v: v in HITTING_SIDES,
+             f"must be one of {HITTING_SIDES}")
+    _require(path, "landmarks", data["landmarks"], list,
+             lambda v: len(v) > 0 and len(set(v)) == len(v) and all(n in LM for n in v),
+             f"must be a non-empty list of unique names from {sorted(LM)}")
+    _require(path, "placement_offset_m", data["placement_offset_m"], list,
+             lambda v: len(v) == 3 and all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                                           for x in v),
+             "must be a list of 3 numbers")
+    data["send_rate_max_hz"] = float(data["send_rate_max_hz"])
+    data["landmarks"] = tuple(data["landmarks"])
+    data["placement_offset_m"] = tuple(float(x) for x in data["placement_offset_m"])
+    return BlenderConfig(**data)

@@ -1,0 +1,15 @@
+# Blender raw camera shadow (M5-preview). Loaded by ekagrata.core.config.load_blender_config.
+# The raw camera shadow is NOT the Digital Twin: Empties sit at raw MediaPipe landmark positions.
+blender_exe: "D:/Video Editing/Blender/new b/blender.exe"
+blender_version: "5.0.1"      # pinned by the user 2026-09-30 (bundled Python 3.11.13)
+udp_host: 127.0.0.1           # loopback only; the add-on also binds 127.0.0.1 (never 0.0.0.0)
+udp_port: 9870
+send_rate_max_hz: 60.0        # sender skips messages that come sooner than 1/this after the previous one
+hitting_side: right           # right | left: which arm is drawn in the hitting-arm colour
+# Landmark subset streamed to Blender (names from ekagrata.vision.landmark_map.LM).
+landmarks: [nose, l_shoulder, r_shoulder, l_elbow, r_elbow, l_wrist, r_wrist,
+            l_index, r_index, l_pinky, r_pinky, l_hip, r_hip]
+# Where the figure is drawn on the court, metres, EKAGRATA world (X toward the net, Z up). MediaPipe world
+# landmarks have their origin at the hip midpoint, so Z = 1.0 is a DISPLAY lift to roughly hip height, not a
+# measurement. X = -4.0 puts the figure in one half of the singles court (net at X = 0).
+placement_offset_m: [-4.0, 0.0, 1.0]
