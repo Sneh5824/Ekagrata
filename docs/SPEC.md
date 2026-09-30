@@ -132,6 +132,7 @@ data/sessions/<YYYY-MM-DD>_<session>_<athlete>/
   session.json                    # metadata (schema below); written at start, finalised at end
   video/cam0.mp4                  # optional raw video
   video/cam0_frames.csv           # frame_idx, t_host_ns, t_sync_ns, pts_ns (file mode), dropped_before
+                                  #   (t_host_ns timestamp point: session.json camera.timestamp_point)
   pose/cam0_landmarks.parquet     # frame_idx, t_sync_ns, lm{i}_{x,y,z,vis,pres} (i=0..32, image-normalised),
                                   #   wlm{i}_{x,y,z} (MediaPipe world, metres, raw MediaPipe axes)
   imu/imu.csv                     # one row per sample, all nodes (columns in §4.2)
@@ -147,6 +148,14 @@ data/sessions/<YYYY-MM-DD>_<session>_<athlete>/
 Raw files are append-only. Derived files may be regenerated; each derived file records the code version
 (`git describe --always --dirty`) in `session.json.derived[]`.
 
+**Camera timestamp point** (changed 2026-09-30, user-approved): live `t_host_ns` is taken **immediately after
+`retrieve()`** and recorded as `session.json camera.timestamp_point = "after_retrieve"`. This is the frame's
+ARRIVAL at the host plus JPEG decode (≈ 3 ms measured at 1280x720), not the exposure time; the unknown
+camera-internal latency (exposure, readout, USB, driver) is what the LED sync (M7) and experiment E07 measure.
+File mode: `timestamp_point = "pts"` (container PTS). Sessions recorded before 2026-09-30 have no
+`timestamp_point` key and were stamped after `grab()`: with OpenCV DirectShow, `grab()` returns before the
+frame arrives, so those stamps are ≈ one frame interval early, approximately constant; velocities/accelerations unaffected; absolute cross-sensor sync affected. They are left untouched (append-only).
+
 ### 4.2 `imu/imu.csv` columns
 `t_sync_ns, t_node_us, t_rx_us, t_host_ns, node, seq, qw, qx, qy, qz, gx, gy, gz, ax, ay, az, lax, lay, laz,
 cal_sys, cal_g, cal_a, cal_m, flags, source` — gyro rad/s, acc m/s² (specific force, sensor frame),
@@ -154,7 +163,8 @@ cal_sys, cal_g, cal_a, cal_m, flags, source` — gyro rad/s, acc m/s² (specific
 
 ### 4.3 `session.json` (minimum keys)
 `schema_version, session_id, athlete_id, created_utc, handedness, code_version, host {os, python, packages},
-camera {device, backend, requested {w,h,fps}, reported {w,h,fps}, measured_fps}, model {name, file_sha256},
+camera {device, backend, timestamp_point, requested {w,h,fps}, reported {w,h,fps}, measured_fps},
+model {name, file_sha256},
 imu {nodes: [{node, placement, mounting_note, firmware, bno_mode}], receiver_port}, calibration {…},
 clock_sync {per-node offset/drift, method}, notes, derived []`.
 
@@ -234,8 +244,10 @@ one and two wraps.
 - `core/config.py`: load + validate YAML (dataclasses; clear error messages). Create `configs/camera.yaml`.
 - `scripts/download_models.py`: downloads to `models/` and records SHA-256:
   `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_{lite|full|heavy}/float16/latest/pose_landmarker_{lite|full|heavy}.task`
-- `io/camera.py`: capture thread that stamps each frame with `now_ns()` **immediately after grab**, puts
-  `(frame, t_host_ns, frame_idx)` into a bounded queue (drop-oldest, count drops). Backend selectable.
+- `io/camera.py`: capture thread that stamps each frame with `now_ns()` **immediately after retrieve()**
+  (changed 2026-09-30 from "after grab"; see §4.1 timestamp point), puts `(frame, t_host_ns, frame_idx)` into a
+  bounded queue (drop-oldest, count drops). Backend selectable. Wrong-camera guard (2026-09-30): fails if the
+  driver-reported fourcc differs from the requested one or the first frames are near-black.
 - `sources/pose.py`: `LiveCameraSource` and `VideoFileSource` (timestamps from container PTS; for 240 fps phone
   files, verify PTS spacing and report it). Same output type.
 - `vision/pose_landmarker.py`: Tasks API `PoseLandmarker`, **VIDEO** running mode (strictly increasing ms
@@ -353,8 +365,10 @@ and generated models.
 - `scripts/export_for_blender.py`: `motion/joints.parquet` → plain CSV of per-bone local quaternions per frame
   (Blender's Python may not have pandas/pyarrow).
 - `blender/scripts/play_motion.py`: keyframes the armature from that CSV (athlete and/or candidate).
-- `transport/udp_twin.py`: sender — compact message `{seq, t_sync_ns, rig: "athlete"|"candidate",
-  bones: {name: [w,x,y,z]}, racket_head: [x,y,z]}` as JSON (fallback: struct) to `127.0.0.1:9870`.
+- `transport/udp_twin.py`: sender — compact message `{seq, source: "real"|"sim"|"replay", t_sync_ns, t_send_ns,
+  rig: "athlete"|"candidate", bones: {name: [w,x,y,z]}, racket_head: [x,y,z]}` as JSON (fallback: struct) to
+  `127.0.0.1:9870`. `source` (user-approved 2026-09-30, as in M5-preview) tells the receiver whether `t_sync_ns`
+  is a live capture time; only "real" messages give a meaningful capture-to-display age.
 - `blender/addon/ekagrata_live/`: modal timer operator (≈ 60 Hz) with a non-blocking UDP socket; drains the
   socket and applies **only the newest** message; panel shows receive rate, message age (ms), drops; clean
   start/stop; never blocks the UI thread.
@@ -379,7 +393,9 @@ from M3/M4. Same Blender rules as M5 (5.0.1, 5.0 API only, bpy + stdlib only, ma
 **Build:** `configs/blender.yaml` (blender_exe, blender_version, UDP 127.0.0.1:9870, send-rate limit, landmark
 subset: nose, shoulders, elbows, wrists, index, pinky, hips; figure placement offset on court);
 `ekagrata/transport/udp_twin.py` (non-blocking, rate-limited sender, never raises on send failure; JSON
-`{v:1, seq, mode:"landmarks", t_sync_ns, t_send_ns, points:{name:[x,y,z]}, vis:{name:float}}`);
+`{v:1, seq, mode:"landmarks", source:"real"|"replay", t_sync_ns, t_send_ns, points:{name:[x,y,z]},
+vis:{name:float}}`; `source` added 2026-09-30 with user approval: it tells the receiver whether `t_sync_ns` is a
+live host-clock capture time ("real") or a recorded one ("replay", capture age not meaningful));
 `scripts/stream_to_blender.py` (`--camera N` live or `--session <path>` real-time replay of
 `cam0_landmarks.parquet`, `--loop`, optional One-Euro, measured summary on exit);
 `blender/scripts/build_preview_scene.py` (court 13.40 × 5.18 m with lines, net 1.524 m, floor, lights, camera,
@@ -600,6 +616,9 @@ verify `torch.cuda.is_available()`).
 - `scripts/make_report.py`: collects every `experiments/*/results/*.json` into one HTML/Markdown evidence report
   with n, mean ± SD, median, p95, max, 95% CI — and marks each result REAL or SIMULATED.
 - Demo hardening checklist: live → replay → pre-rendered video fallbacks; battery and radio checks.
+  Open item (2026-09-30): **camera indices shift when Iriun/USB cameras change** (DirectShow and MSMF also
+  number devices differently); consider name-based device selection. Until then the wrong-camera guard fails
+  loudly and every camera script prints its device index and backend at startup.
 
 ---
 

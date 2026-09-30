@@ -74,10 +74,60 @@ send errors, measured send rate, frames with pose, replay lateness vs schedule).
 ## 5. Live camera
 
 ```powershell
-uv run python scripts/stream_to_blender.py --camera 0
+uv run python scripts/stream_to_blender.py
 ```
-Uses the M1 capture + PoseLandmarker path with `configs/camera.yaml` (nothing is recorded). Add `--smooth` for
+The camera is `device` in `configs/camera.yaml` (`--camera N` overrides it). On 2026-09-30 DirectShow index 0
+was the Iriun virtual camera (phone app running, showing its "waiting" screen) and index 1 the laptop webcam,
+so `device: 1`. The startup `Camera:` line prints the index and backend; the capture refuses a camera whose
+reported fourcc differs from the requested one or whose first frames are near-black. Uses the M1 capture + PoseLandmarker path with `configs/camera.yaml` (nothing is recorded). Add `--smooth` for
 the online One-Euro filter (`one_euro_*` in `configs/joints.yaml`).
+
+## Latency breakdown method (basis for experiment E07)
+
+Goal: split "age since capture" (Blender apply time − `t_sync_ns`) into stages, all measured with the
+host clock `time.perf_counter_ns()` (QueryPerformanceCounter, system-wide on Windows, so stamps from the
+streamer and from Blender are comparable on the same machine).
+
+**Stamps** (live mode, one row per SENT message; `--timing-csv PATH` writes them per frame):
+
+| stamp | where | meaning |
+|---|---|---|
+| `t_grab_ns` | capture thread, right after `cap.grab()` | diagnostic only (DirectShow: before the frame arrives) |
+| `t_host_ns` | capture thread, right after `cap.retrieve()` | = `t_sync_ns`; frame arrival + decode ("after_retrieve") |
+| `t_dequeue_ns` | streamer, when the frame leaves the capture queue | |
+| `t_infer_start_ns` / `t_infer_end_ns` | around `detect()` | includes BGR→RGB and `mp.Image` |
+| `t_send_ns` | sender, before JSON encoding | also sent in the message |
+| `t_sent_ns` | sender, after `sendto()` returns | |
+| apply time | Blender add-on, when the message is applied | gives "age since send" and "age since capture" |
+
+**Stages** (printed by `stream_to_blender.py` on exit as median / p95 / max): grab → retrieve end =
+t_host − grab (DirectShow: mostly waiting for the frame, not part of capture age); queue wait = dequeue −
+t_host; dequeue → inference; inference; map + smooth = send − infer_end; encode + sendto = sent − send;
+t_host → sent. Blender adds send → apply (panel / console "age since send"). Queue wait is also reported in
+units of the median frame interval.
+
+**Consistency check:** median(t_host → sent) + median(Blender age since send) should be close to the
+Blender median "age since capture" (medians do not add exactly; a large mismatch means a missing stage).
+
+**How to run** (Blender open, add-on started, person in frame):
+```powershell
+uv run python scripts/stream_to_blender.py --seconds 30 --timing-csv experiments/E07_latency/raw/<name>.csv
+```
+then press **Stop** in Blender and copy the console summary.
+
+**Known measurement caveats:**
+- With OpenCV's DirectShow backend, `grab()` returns almost immediately and `retrieve()` blocks until the next
+  frame arrives. Since 2026-09-30 `t_host_ns` is therefore stamped after `retrieve()` ("after_retrieve");
+  sessions and timing files from before that were stamped after `grab()`, about one frame interval early, and
+  their "capture age" includes that wait (see `experiments/E07_latency/README.md`).
+- "after_retrieve" is frame arrival + decode (≈ 3 ms), not exposure time.
+- Exposure, sensor readout, USB transfer and driver time before the frame reaches OpenCV are not visible to the
+  host clock; measuring them needs an external reference (e.g. the M7 sync LED or a high-speed video of a
+  screen and an event).
+- Display is excluded: Blender viewport redraw and monitor latency come after "apply".
+- The add-on polls at ~60 Hz, so send → apply includes up to one timer tick (~16.7 ms) of waiting.
+- Camera index: DirectShow and MSMF number devices differently, and a virtual camera (Iriun) can take index 0.
+  Confirm the device with the printed `Camera:` line (requested vs driver-reported fourcc) and `Frames with pose`.
 
 ## Troubleshooting
 - **"cannot bind 127.0.0.1:9870"**: another Blender (or program) uses the port. Stop it, or change

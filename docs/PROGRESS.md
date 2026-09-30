@@ -308,7 +308,9 @@ shadow only: Empties at raw landmark positions; no `rig.json`, no joint rotation
     median 8.5 / p95 15.7 ms`; capture age `n/a in replay`; nose and l_shoulder moved off the placeholder;
     r_wrist and l_hip hidden (in that recording r_wrist has vis ≥ 0.5 in only 19.2 % of frames, hips in 0 %).
     Socket closed on Stop.
-  - Live `--camera 0 --seconds 12` (nobody in front of the camera): `Frames processed : 99`,
+  - Live `--camera 0 --seconds 12` — **CORRECTION (2026-09-30 investigation): DirectShow index 0 was the Iriun
+    virtual camera's 'waiting for phone' screen, not the laptop webcam; the earlier note 'nobody in front of
+    the camera' was wrong, and these numbers are not representative**: `Frames processed : 99`,
     `Frames with pose : 0`, `Capture fps : 8.19 (measured from grab timestamps)`; Blender: `received 57,
     applied 57, lost 0`; `age since send: median 7.0 / p95 14.7 ms`; **`age since capture: median 144.5 /
     p95 152.0 ms`** (capture → Blender apply, excluding display; includes MediaPipe inference). All landmarks
@@ -324,7 +326,8 @@ shadow only: Empties at raw landmark positions; no `rig.json`, no joint rotation
   2. Open `blender\ekagrata_preview.blend`, N-panel → EKAGRATA → Start.
   3. `uv run python scripts/stream_to_blender.py --session data/sessions/2026-09-29_swings01_002 --loop`:
      confirm the figure moves; paste the panel values and the script summary.
-  4. `uv run python scripts/stream_to_blender.py --camera 0` standing in frame: confirm it follows you; press
+  4. `uv run python scripts/stream_to_blender.py` (camera from `camera.yaml`, now index 1) standing in frame:
+     confirm it follows you; press
      Stop and paste the console summary (Window → Toggle System Console).
 - Deviations from the approved plan:
   - The message has one extra field, `source: "real" | "replay"`, needed so Blender can label replay capture
@@ -350,9 +353,108 @@ shadow only: Empties at raw landmark positions; no `rig.json`, no joint rotation
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
   ```
 
+### Camera and latency investigation (M5-preview follow-up) — 2026-09-30 (measurement only; fix awaiting approval)
+- SPEC: message field `source` documented in M5-preview and M5 (M5 also gets `t_send_ns`, and `"sim"` for the
+  simulated candidate rig).
+- (a) Measurements:
+  - `check_env.py --camera 0 --seconds 10` → `Measured : 8.53 fps over 9.96 s (86 frames)`, reported fourcc
+    `'}ë6ä'` (invalid). Thumbnail of index 0: black Iriun "waiting" screen, mean brightness 0.6/255.
+  - Windows devices: `USB2.0 HD UVC WebCam` and `Iriun Webcam` present; `IriunWebcam` process running.
+  - DirectShow index 1 = laptop webcam (sees the user; fourcc `'MJPG'`, brightness 169.9, 15.10 fps without
+    exposure set). `check_env.py --camera 1 --seconds 10` → `Measured : 15.03 fps over 9.98 s (151 frames)`
+    (check_env never applies exposure, so auto-exposure limits it).
+  - `camera_probe.py --camera 1`: dshow 1280x720 MJPG exposure -6 → 29.90 fps, median interval 32.1 ms,
+    brightness 46.8, 0 dups; auto → 15.79 fps, brightness 126.5; -7 → 29.90 fps, brightness 50.0 (probe
+    suggestion). MSMF rows at index 1 show brightness 0.5 and 79–94 dups = the Iriun screen: **DirectShow and
+    MSMF number the devices differently.**
+- (b) Code path: `stream_to_blender.py --camera N` uses exactly the `camera.yaml` settings via the same
+  `LiveCameraSource` → `CameraCapture.start()` as `record_session.py` (backend, 1280x720, fps request, MJPG set
+  twice, `exposure_auto`, `exposure`), and the same `create_landmarker` / `detect` / `video_timestamp_ms`; only
+  `device` is overridden by `--camera`. Differences: none in settings; streamer creates the landmarker before
+  opening the camera and writes nothing to disk. `check_env.py` differs: own open code, no exposure.
+  Streamer now prints the requested and driver-reported camera settings; 30 s run reported
+  `{'w': 1280, 'h': 720, 'fps': 60.0, 'fourcc': 'MJPG', 'auto_exposure': -1.0, 'exposure': -6.0}`.
+- (c) Latency breakdown, `stream_to_blender.py --camera 1 --seconds 30` with Blender 5.0.1 GUI receiving; the
+  user was seated at the laptop in frame (not standing): `Frames with pose : 897 (100.0 %)`,
+  `Capture fps : 29.89`, `Frames dropped : 0`, `Send rate : 29.95 Hz`. Stages (n = 897, ms, median / p95 / max):
+  decode (retrieve) 31.93 / 47.62 / 77.82; queue wait 0.22 / 0.37 / 0.81; dequeue → inference 0.01 / 0.01 /
+  0.05; inference 17.52 / 20.20 / 36.49; map + smooth 0.19 / 0.30 / 0.87; encode + sendto 0.16 / 0.23 / 0.38;
+  grab → sent 50.16 / 65.49 / 115.06; grab interval 32.09. Blender (716 applied, lost 0): age since send
+  8.5 / 17.8 ms; **age since capture 58.4 / 78.4 ms** (whole run). Consistency: 50.16 + 8.5 = 58.7 ≈ 58.4.
+  - **Queue wait ≈ one frame interval: refuted.** Queue wait / grab interval = 0.01 (median and p95); inference
+    (17.5 ms) is shorter than the frame interval (32.1 ms), so frames are consumed as soon as they are queued.
+  - The ~one-interval wait is in grab → retrieve instead. Direct probe (300 frames, same settings):
+    `grab()` median 0.01 ms, `retrieve()` median 32.00 ms (p95 47.80); JPEG decode of a 1280x720 frame costs
+    2.85 ms median (`cv2.imdecode` reference). So with OpenCV DirectShow, `grab()` returns immediately and
+    `retrieve()` waits for the next frame: **`t_host_ns` (stamped after grab) precedes the frame's arrival at
+    the host by about one frame interval.** This affects all M1/M2 live recordings (camera timeline offset) and
+    overstates capture age by that amount.
+  - Blender send → apply 8.5 ms median is consistent with the ~60 Hz timer (up to 16.7 ms wait).
+  - Scratch files (not in the repo): per-frame stamps `timing_live_30s.csv`, probes `which_cam.py`,
+    `grab_probe.py` in the session scratchpad.
+- Code changed (instrumentation only): `ekagrata/core/types.py` (`CameraFrame.t_retrieved_ns`, optional),
+  `ekagrata/io/camera.py` (stamp after `retrieve()`), `ekagrata/transport/udp_twin.py` (`last_sent_ns` after
+  `sendto`), `scripts/stream_to_blender.py` (stage stamps, `--timing-csv`, camera info line, breakdown report),
+  `tests/test_camera.py`, `tests/test_udp_twin.py`, `tests/test_stream_replay.py`, `docs/blender.md` (method),
+  `docs/SPEC.md` (`source` field).
+
+### Camera guard + timestamp fix (approved 2026-09-30; M5-preview follow-up) — 2026-09-30 (DONE)
+- Approved by the user: wrong-camera guard, `device: 1` default, startup camera line in every camera script,
+  timestamp point "after_retrieve", `check_env.py` config mode + `--raw`, keep the E07 timing CSV. Not done
+  (as instructed): no inference or Blender-timer optimisation; name-based device selection deferred to the M14
+  demo-hardening checklist (open item added in SPEC M14).
+- Files changed:
+  - `ekagrata/io/camera.py`: `t_host_ns` stamped immediately after `retrieve()`; `t_grab_ns` kept as a
+    diagnostic; `TIMESTAMP_POINT = "after_retrieve"` in `start()` info (→ `session.json camera.timestamp_point`);
+    wrong-camera guard in `start()` (fourcc mismatch → RuntimeError naming both values; first
+    `STARTUP_CHECK_FRAMES = 5` frames all with mean pixel value ≤ `BLACK_MEAN_MAX = 5.0` → RuntimeError with a
+    "try another index" hint; no frames at startup → RuntimeError); `describe(cfg)` startup line.
+  - `ekagrata/core/types.py`: `CameraFrame.t_grab_ns` (optional, replaces this milestone's `t_retrieved_ns`);
+    `t_host_ns` comment updated.
+  - `configs/camera.yaml`: `device: 1` (laptop webcam) with a comment on shifting indices.
+  - `scripts/record_session.py`, `scripts/stream_to_blender.py`: `--camera` optional (default = `camera.yaml`
+    `device`), startup camera line; record_session writes `timestamp_point` ("after_retrieve" live, "pts" file).
+    Streamer stage names updated ("grab -> retrieve end", "t_host -> sent").
+  - `scripts/check_axes.py`, `scripts/camera_probe.py`: startup camera line (index + backend).
+  - `scripts/check_env.py`: default = `camera.yaml` settings through `CameraCapture` (incl. guard, exposure),
+    reports brightness and drops; `--raw` = old behaviour (plus a fourcc-mismatch warning).
+  - Tests: `tests/test_camera.py` (fake camera with startup frames; new: `test_timestamp_is_taken_after_retrieve`
+    — grab() instant, retrieve() blocks 30 ms, stamp asserted after retrieve; `test_info_reports_timestamp_point`;
+    `test_fourcc_mismatch_fails_naming_both`; `test_near_black_startup_frames_fail_with_hint`;
+    `test_no_frames_at_startup_fails`), `tests/test_stream_replay.py` (stage names).
+  - Docs: `docs/SPEC.md` (§4.1 camera timestamp point + bias of old sessions, §4.3 `timestamp_point`, M1
+    `io/camera.py` text, M14 open item), `docs/conventions.md` (Time), `docs/blender.md` (method, camera index).
+  - Evidence: `experiments/E07_latency/README.md`, `raw/2026-09-30_breakdown_seated_pre_fix.csv`,
+    `raw/2026-09-30_breakdown_seated_post_fix.csv`.
+- Old sessions (`data/sessions/*`) untouched. Their bias, as documented in SPEC §4.1: "≈ one frame interval
+  early, approximately constant; velocities/accelerations unaffected; absolute cross-sensor sync affected".
+- Tests: `213 passed` · Ruff: `All checks passed!`
+- Guard on the real hardware: `check_env.py --seconds 5` (config, index 1) → `Camera: device index 1, backend
+  dshow`, reported fourcc `'MJPG'`, `Measured : 30.04 fps over 4.99 s (151 frames)`, `Brightness : mean pixel
+  value 51.2 / 255`, `Dropped : 0`. `check_env.py --camera 0` → `ERROR: camera index 0 (dshow): requested
+  fourcc 'MJPG' but the driver reports '}ë6ä'. It is probably not the intended camera (e.g. the Iriun virtual
+  camera can take index 0). Try another index with --camera N, or set `device` in configs/camera.yaml.`
+  (The near-black branch is covered by the unit test only; on this hardware the fourcc check triggers first.)
+- Post-fix 30 s breakdown (`stream_to_blender.py --camera 1 --seconds 30`, user seated in frame, Blender 5.0.1
+  GUI receiving): 900 frames, pose 100 %, capture 30.00 fps, 0 dropped, send 30.01 Hz. Stages (ms, median / p95
+  / max, n = 900): grab → retrieve end 31.95 / 47.61 / 49.67; queue wait 0.21 / 0.29 / 0.51; dequeue →
+  inference 0.01 / 0.01 / 0.03; inference 17.51 / 19.15 / 31.46; map + smooth 0.19 / 0.28 / 0.53; encode +
+  sendto 0.16 / 0.22 / 0.43; t_host → sent 18.08 / 19.76 / 32.30; frame interval 32.05; queue wait / frame
+  interval 0.01. Blender (739 applied, 0 lost): age since send 8.2 / 18.0 ms; **age since capture 26.5 /
+  36.2 ms** (pre-fix run: 58.4 / 78.4 ms). Consistency: 18.08 + 8.2 = 26.3 ≈ 26.5.
+- Known limitations: "age since capture" now starts at frame arrival + decode; camera-internal latency
+  (exposure, readout, USB, driver) and display latency are not included and are still unmeasured (M7 LED
+  sync, E07). Both runs were seated, not standing. Camera indices can still shift (M14 open item).
+- Suggested commit message:
+  ```
+  Camera guard + after_retrieve timestamps: wrong-camera guard, device 1, check_env config mode, E07 evidence
+
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  ```
+
 ## Open questions for the user
-- `record_session.py` / `check_axes.py`: make `--camera` optional (default = `camera.yaml` `device`)? Currently
-  `record_session.py` requires `--camera` or `--video`.
+- RESOLVED 2026-09-30: `--camera` is optional in `record_session.py`, `stream_to_blender.py`, `check_env.py`
+  and `check_axes.py` (default = `camera.yaml` `device`).
 - Git is not initialised in this folder. Should the agent run `git init` (no commit), or will you?
 - 2026-09-29: phone camera tested — Realme 7 via Iriun Webcam over USB is camera index 1. Per the user, the project
   uses the laptop webcam only for now, so `configs/camera.yaml` stays at `device: 0`. User run `check_env.py --camera 1`: `Measured : 30.01 fps over 5.00 s (151 frames)`,
@@ -360,8 +462,7 @@ shadow only: Empties at raw landmark positions; no `rig.json`, no joint rotation
   (`'}ë6ä'`, Iriun virtual driver). Resolution/fps are set in the Iriun apps; requested values may be ignored.
 - RESOLVED 2026-09-29: laptop webcam ~15 fps was caused by auto-exposure; manual exposure -6 gives ~30 fps
   measured (see "Camera diagnosis" above).
-- 2026-09-30 (M5-preview): live capture measured 8.19 fps during the Blender GUI test (29.9 fps measured on
-  2026-09-29 with the same config). Re-run `scripts/check_env.py --camera 0` in your normal lighting, with and
-  without Blender open, to see whether it reproduces?
-- 2026-09-30 (M5-preview): OK to keep the extra message field `source` ("real"/"replay")? It is the only way for
-  Blender to know that capture age is not meaningful in replay.
+- RESOLVED 2026-09-30: the 8.19 fps live capture was DirectShow index 0 = Iriun virtual camera (see "Camera
+  and latency investigation"). Fixed: see "Camera guard + timestamp fix". Note the index SHIFTED: on
+  2026-09-29 Iriun was index 1, on 2026-09-30 index 0.
+- RESOLVED 2026-09-30: keep the message field `source`; documented in SPEC M5-preview and M5.

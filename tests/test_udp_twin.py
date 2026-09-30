@@ -94,8 +94,10 @@ def test_world_points_uses_the_one_mapping():
 
 def test_rate_limit_with_fake_clock():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sender = UdpTwinSender("127.0.0.1", 9, 60.0, clock=FakeClock(5_000_000), sock=sock)
-    for _ in range(100):  # calls at t = 0, 5, ..., 495 ms; 60 Hz -> at most one per 16.67 ms
+    clock = FakeClock(0)  # time only moves when the test sets it
+    sender = UdpTwinSender("127.0.0.1", 9, 60.0, clock=clock, sock=sock)
+    for i in range(100):  # calls at t = 0, 5, ..., 495 ms; 60 Hz -> at most one per 16.67 ms
+        clock.t = i * 5_000_000
         sender.send_landmarks("real", 0, {}, {})
     sender.close()
     assert sender.sent + sender.send_errors == 25  # sends at 0, 20, 40, ..., 480 ms
@@ -137,5 +139,6 @@ def test_listener_receives_consecutive_seq():
     rx.close()
     sender.close()
     assert [m["seq"] for m in msgs] == [1, 2, 3, 4, 5]
+    assert sender.last_sent_ns > sender.last_send_ns  # post-sendto stamp comes after t_send_ns
     assert [m["t_sync_ns"] for m in msgs] == [1000, 1001, 1002, 1003, 1004]
     assert all(b["t_send_ns"] > a["t_send_ns"] for a, b in zip(msgs, msgs[1:], strict=False))

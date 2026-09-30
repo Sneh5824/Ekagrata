@@ -6,7 +6,8 @@ Message (JSON, UTF-8, one per datagram):
 `points` are EKAGRATA world (Z up, metres) relative to the MediaPipe hip-midpoint origin. Landmarks that are
 missing or non-finite are left out of both `points` and `vis`; a frame without a pose sends empty dicts.
 `source` tells the receiver whether `t_sync_ns` is a live host-clock capture time ("real") or a recorded one
-("replay"). `t_send_ns` is `time.perf_counter_ns()` of the sender right before `sendto`.
+("replay"). `t_send_ns` is `time.perf_counter_ns()` of the sender just before JSON encoding and `sendto`
+(`UdpTwinSender.last_sent_ns` is stamped right after `sendto` returns).
 """
 
 import json
@@ -99,7 +100,8 @@ class UdpTwinSender:
         self.send_errors = 0
         self.last_error = ""
         self.first_send_ns: int | None = None
-        self.last_send_ns: int | None = None
+        self.last_send_ns: int | None = None  # t_send_ns of the last successful message
+        self.last_sent_ns: int | None = None  # clock() right after that message's sendto returned
 
     def send_landmarks(self, source: str, t_sync_ns: int, points: dict, vis: dict) -> bool:
         """Send one message unless rate-limited. Returns True if the datagram was handed to the OS."""
@@ -114,6 +116,7 @@ class UdpTwinSender:
             self.send_errors += 1
             self.last_error = f"{type(exc).__name__}: {exc}"
             return False
+        self.last_sent_ns = self.clock()
         self.seq += 1
         self.sent += 1
         self.first_send_ns = now if self.first_send_ns is None else self.first_send_ns

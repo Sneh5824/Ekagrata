@@ -1,10 +1,12 @@
 """Stream MediaPipe landmarks to the Blender RAW CAMERA SHADOW over UDP (M5-preview; NOT the Digital Twin).
 
-Live (M1 capture + PoseLandmarker path; nothing is recorded):
-  uv run python scripts/stream_to_blender.py --camera 0
+Live (M1 capture + PoseLandmarker path; nothing is recorded; camera = `device` in configs/camera.yaml):
+  uv run python scripts/stream_to_blender.py            # or --camera N to override the index
 Replay a recorded session in real time (from t_sync_ns):
   uv run python scripts/stream_to_blender.py --session data/sessions/<dir> --loop
 Add --smooth for the online One-Euro filter (parameters from configs/joints.yaml). Stop with Ctrl+C.
+Live mode prints a per-stage latency breakdown on exit (--timing-csv PATH also writes the per-frame stamps);
+method in docs/blender.md.
 Points are mapped with camera.yaml mp_to_world: axis mapping unverified until check_axes passes.
 """
 
@@ -19,6 +21,7 @@ import pandas as pd
 
 from ekagrata.analysis.filters import OneEuroFilter
 from ekagrata.core.config import ConfigError, load_blender_config, load_camera_config, load_joints_config
+from ekagrata.core.timebase import now_ns
 from ekagrata.io.session import LANDMARKS_PARQUET
 from ekagrata.transport.udp_twin import UdpTwinSender, world_points
 from ekagrata.vision.landmark_map import N_LANDMARKS
@@ -26,11 +29,27 @@ from ekagrata.vision.landmark_map import N_LANDMARKS
 AXIS_CAVEAT = "axis mapping unverified until check_axes passes"
 COARSE_SLEEP_MARGIN_NS = 2_000_000  # sleep until ~1 ms before the target, then yield-spin to it
 
+# Live latency stamps (host perf_counter_ns, one row per SENT message) and the stages derived from them.
+# t_host_ns = t_sync_ns = after retrieve() (frame arrival + decode); t_grab_ns = after grab() (diagnostic).
+STAMPS = ("t_grab_ns", "t_host_ns", "t_dequeue_ns", "t_infer_start_ns", "t_infer_end_ns", "t_send_ns",
+          "t_sent_ns")
+STAGES = {  # name: (from stamp, to stamp)
+    "grab -> retrieve end": ("t_grab_ns", "t_host_ns"),
+    "queue wait": ("t_host_ns", "t_dequeue_ns"),
+    "dequeue -> inference": ("t_dequeue_ns", "t_infer_start_ns"),
+    "inference": ("t_infer_start_ns", "t_infer_end_ns"),
+    "map + smooth": ("t_infer_end_ns", "t_send_ns"),
+    "encode + sendto": ("t_send_ns", "t_sent_ns"),
+    "t_host -> sent": ("t_host_ns", "t_sent_ns"),
+}
+
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--camera", type=int, help="live camera index (M1 capture + PoseLandmarker)")
+    src = p.add_mutually_exclusive_group()
+    src.add_argument("--camera", type=int,
+                     help="live camera index (default: `device` in configs/camera.yaml); "
+                          "live is the default mode")
     src.add_argument("--session", type=Path, help="session folder to replay (pose/cam0_landmarks.parquet)")
     p.add_argument("--loop", action="store_true", help="replay: start again at the end")
     p.add_argument("--smooth", action="store_true", help="apply the online One-Euro filter")
@@ -40,6 +59,7 @@ def parse_args(argv=None):
     p.add_argument("--joints-config", type=Path, default=Path("configs/joints.yaml"))
     p.add_argument("--models-dir", type=Path, default=Path("models"))
     p.add_argument("--model", choices=("lite", "full", "heavy"), help="PoseLandmarker variant (live)")
+    p.add_argument("--timing-csv", type=Path, help="live: write per-frame latency stamps to this CSV")
     args = p.parse_args(argv)
     if args.camera is not None and args.camera < 0:
         p.error("--camera must be >= 0")
@@ -100,6 +120,34 @@ def run_replay(t_sync_ns, emit, clock=time.perf_counter_ns, sleep=time.sleep, lo
         start = start + int(rel[-1]) + gap
 
 
+def stage_durations_ms(rows: list[dict]) -> dict:
+    """{stage: durations in ms (array)} from per-message stamp rows (see STAGES)."""
+    out = {}
+    for name, (a, b) in STAGES.items():
+        out[name] = np.array([(r[b] - r[a]) * 1e-6 for r in rows], dtype=np.float64)
+    return out
+
+
+def stage_report(rows: list[dict]) -> list[str]:
+    """Median / p95 / max per stage, plus frame interval and queue wait expressed in frame intervals."""
+    if not rows:
+        return ["(no messages sent: no latency rows)"]
+    lines = [f"{'stage':24s} {'median ms':>10s} {'p95 ms':>9s} {'max ms':>9s}   "
+             f"(n = {len(rows)} sent messages)"]
+    durations = stage_durations_ms(rows)
+    for name, d in durations.items():
+        lines.append(f"{name:24s} {np.median(d):10.2f} {np.percentile(d, 95):9.2f} {d.max():9.2f}")
+    t_host = np.array([r["t_host_ns"] for r in rows], dtype=np.int64)
+    if t_host.size > 1:
+        interval = float(np.median(np.diff(t_host))) * 1e-6
+        q = durations["queue wait"]
+        lines.append(f"{'frame interval (sent)':24s} {interval:10.2f}   "
+                     "(median between consecutive sent frames)")
+        lines.append(f"queue wait / frame interval: median {np.median(q) / interval:.2f}, "
+                     f"p95 {np.percentile(q, 95) / interval:.2f}")
+    return lines
+
+
 def make_smoother(enabled: bool, joints_config: Path):
     """Return f(t_ns, points: dict) -> dict, the One-Euro filter on world points (or identity)."""
     if not enabled:
@@ -151,6 +199,7 @@ def stream_replay(args, bcfg, cam, sender, smooth) -> dict:
 
 def stream_live(args, bcfg, cam, sender, smooth) -> dict:
     # Imported here so replay does not load OpenCV / MediaPipe.
+    from ekagrata.io.camera import describe
     from ekagrata.sources.pose import LiveCameraSource
     from ekagrata.vision.pose_landmarker import (
         create_landmarker,
@@ -160,7 +209,9 @@ def stream_live(args, bcfg, cam, sender, smooth) -> dict:
         video_timestamp_ms,
     )
 
-    cam = dataclasses.replace(cam, device=args.camera)
+    if args.camera is not None:
+        cam = dataclasses.replace(cam, device=args.camera)
+    print(describe(cam))
     mpath = model_path(args.models_dir, args.model or cam.model_variant)
     landmarker = create_landmarker(mpath)
     try:
@@ -168,21 +219,31 @@ def stream_live(args, bcfg, cam, sender, smooth) -> dict:
     except RuntimeError:
         landmarker.close()
         raise
-    stats = {"frames_processed": 0, "frames_with_pose": 0, "stop_reason": "end of input"}
+    info = source.info()
+    print(f"        requested {info['requested']}, timestamp point {info['timestamp_point']}")
+    print(f"        driver-reported (not measured) {info['reported']}")
+    stats = {"frames_processed": 0, "frames_with_pose": 0, "stop_reason": "end of input", "timing": []}
     t0, last_ms = None, None
     try:
         for frame in source.frames():
+            t_dequeue = now_ns()
             t0 = frame.t_host_ns if t0 is None else t0
             if args.seconds is not None and frame.t_host_ns - t0 >= args.seconds * 1e9:
                 stats["stop_reason"] = "--seconds reached"
                 break
             last_ms = video_timestamp_ms(frame.t_host_ns, t0, last_ms)
             # As in M1: no clock sync yet, t_sync_ns = host QPC clock at grab (Blender shows capture age).
-            pose = detect(landmarker, frame, last_ms, frame.t_host_ns)
+            t_infer_start = now_ns()
+            pose = detect(landmarker, frame, last_ms, frame.t_host_ns)  # incl. BGR->RGB + mp.Image
+            t_infer_end = now_ns()
             ok = has_pose(pose)
             pts, vs = world_points(pose.landmarks_world if ok else None, pose.landmarks_img[:, 3],
                                    bcfg.landmarks, cam.mp_to_world)
-            sender.send_landmarks("real", pose.t_sync_ns, smooth(pose.t_sync_ns, pts), vs)
+            if sender.send_landmarks("real", pose.t_sync_ns, smooth(pose.t_sync_ns, pts), vs):
+                stats["timing"].append(dict(zip(STAMPS, (
+                    frame.t_grab_ns, frame.t_host_ns, t_dequeue, t_infer_start, t_infer_end,
+                    sender.last_send_ns, sender.last_sent_ns), strict=True)) | {
+                    "frame_idx": frame.frame_idx, "dropped_before": frame.dropped_before, "pose": int(ok)})
             stats["frames_processed"] += 1
             stats["frames_with_pose"] += int(ok)
     except KeyboardInterrupt:
@@ -233,8 +294,16 @@ def main(argv=None) -> int:
         med, p95, mx = stats["lateness_ms"]
         print(f"Replay lateness   : median {med:.3f} ms, p95 {p95:.3f} ms, max {mx:.3f} ms (vs schedule)")
     if "capture_fps" in stats:
-        print(f"Capture fps       : {fmt(stats['capture_fps'])} (measured from grab timestamps)")
+        print(f"Capture fps       : {fmt(stats['capture_fps'])} (measured from frame timestamps)")
         print(f"Frames dropped    : {stats['frames_dropped']} (capture queue full)")
+    if "timing" in stats:
+        print("\n=== Latency breakdown (host perf_counter_ns, measured; t_host = after retrieve) ===")
+        print("\n".join(stage_report(stats["timing"])))
+        print("Blender adds send -> apply: see the add-on's 'age since send' (panel / console on Stop).")
+        if args.timing_csv is not None and stats["timing"]:
+            args.timing_csv.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(stats["timing"]).to_csv(args.timing_csv, index=False, encoding="utf-8")
+            print(f"Per-frame stamps written: {args.timing_csv}")
     return 0
 
 

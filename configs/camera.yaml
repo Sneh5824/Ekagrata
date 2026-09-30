@@ -1,6 +1,9 @@
 # Camera capture configuration (loaded by ekagrata.core.config.load_camera_config).
 # Requested values only: the driver may ignore them. Actual fps is always MEASURED and reported.
-device: 0              # OpenCV index; 0 = laptop webcam (1 = Realme 7 via Iriun, not used for now)
+# OpenCV DirectShow index. 2026-09-30: 1 = laptop webcam (USB2.0 HD UVC WebCam), 0 = Iriun virtual camera
+# (the phone app took index 0; it shows a black "waiting" screen). Indices shift when Iriun/USB cameras change:
+# the capture refuses a camera whose reported fourcc differs from `fourcc` or whose first frames are near-black.
+device: 1
 backend: dshow         # dshow | msmf | any
 width: 1280
 height: 720

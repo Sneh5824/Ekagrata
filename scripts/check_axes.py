@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 from ekagrata.core.config import MODEL_VARIANTS, ConfigError, load_camera_config
+from ekagrata.io.camera import describe
 from ekagrata.sources.pose import LiveCameraSource
 from ekagrata.vision.landmark_map import LM, mp_to_world
 from ekagrata.vision.pose_landmarker import (
@@ -66,6 +67,7 @@ def main() -> int:
         return 2
     if args.camera is not None:
         cfg = dataclasses.replace(cfg, device=args.camera)
+    print(describe(cfg))
     mpath = model_path(args.models_dir, args.model or cfg.model_variant)
     try:
         landmarker = create_landmarker(mpath)

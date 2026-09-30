@@ -1,7 +1,8 @@
 """Record a session: live camera or video file -> MediaPipe PoseLandmarker -> session folder.
 
 Examples:
-  uv run python scripts/record_session.py --athlete a01 --session live01 --camera 0 --preview --seconds 30
+  uv run python scripts/record_session.py --athlete a01 --session live01 --preview --seconds 30
+  (live camera = `device` in configs/camera.yaml; --camera N overrides it)
   uv run python scripts/record_session.py --athlete a01 --session phone01 --video D:/clips/smash.mp4
 """
 
@@ -16,6 +17,7 @@ import numpy as np
 
 from ekagrata.core.config import MODEL_VARIANTS, ConfigError, load_camera_config
 from ekagrata.core.timebase import now_ns
+from ekagrata.io.camera import describe
 from ekagrata.io.session import SessionWriter, base_metadata, create_session, sha256_file
 from ekagrata.sources.pose import LiveCameraSource, VideoFileSource, pts_report
 from ekagrata.vision.pose_landmarker import (
@@ -34,8 +36,9 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--athlete", required=True, help="athlete id (letters, digits, '-')")
     p.add_argument("--session", required=True, help="session name (letters, digits, '-')")
-    src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--camera", type=int, help="camera index (overrides configs/camera.yaml device)")
+    src = p.add_mutually_exclusive_group()
+    src.add_argument("--camera", type=int,
+                     help="camera index (default: `device` in configs/camera.yaml); live is the default mode")
     src.add_argument("--video", type=Path, help="process a video file instead of the live camera")
     p.add_argument("--model", choices=MODEL_VARIANTS, help="PoseLandmarker variant (default: from config)")
     p.add_argument("--config", type=Path, default=Path("configs/camera.yaml"))
@@ -83,6 +86,8 @@ def main() -> int:
         print(f"ERROR: model file not found: {mpath}. Run: uv run python scripts/download_models.py")
         return 2
     live = args.video is None
+    if live:
+        print(describe(cfg))
 
     try:
         source = LiveCameraSource(cfg) if live else VideoFileSource(args.video)
@@ -92,7 +97,10 @@ def main() -> int:
 
     meta = base_metadata(args.session, args.athlete, args.handedness)
     info = source.info()
+    # Live info carries timestamp_point "after_retrieve" (frame arrival + decode); file mode uses the
+    # container PTS.
     meta["camera"] = {**info, "mode": "live" if live else "file"}
+    meta["camera"].setdefault("timestamp_point", "pts")
     meta["model"] = {"name": mpath.name, "variant": variant, "file_sha256": sha256_file(mpath)}
     if not live:
         meta["camera"]["source_sha256"] = sha256_file(args.video)
@@ -188,7 +196,7 @@ def main() -> int:
     if live:
         print(f"Frames captured   : {summary['frames_captured']}")
         print(f"Frames dropped    : {summary['frames_dropped']} (capture queue full)")
-        print(f"Capture fps       : {fmt(summary['capture_fps_measured'])} (measured from grab timestamps)")
+        print(f"Capture fps       : {fmt(summary['capture_fps_measured'])} (measured from frame timestamps)")
     else:
         pts = summary["pts"]
         print(f"Declared fps      : {fmt(info['reported']['fps'])} (container, not measured)")

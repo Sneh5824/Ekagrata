@@ -54,6 +54,11 @@ Example: a 3-point elbow interior angle of 135° (the original PDF's 2-D example
 - Host clock: `time.perf_counter_ns()` (`timebase.now_ns()`). Never use `time.time()` to measure intervals.
 - ESP32 `micros()` wraps at 2³²; unwrap with `timebase.unwrap_u32`.
 - Canonical timeline column: `t_sync_ns`.
+- Camera frames (live): `t_host_ns` is stamped **immediately after `retrieve()`**
+  (`session.json camera.timestamp_point = "after_retrieve"`, since 2026-09-30). That is the frame's arrival at
+  the host plus decode (≈ 3 ms), NOT the exposure time; the camera-internal latency is measured by the LED sync
+  (M7) and experiment E07. Older sessions (no `timestamp_point`) were stamped after `grab()`, which on OpenCV
+  DirectShow is ≈ one frame interval early, approximately constant; velocities/accelerations unaffected; absolute cross-sensor sync affected. Video files: `timestamp_point = "pts"`.
 
 ## Segment / node names
 `upper_arm`, `forearm`, `racket` (or `hand` if configured), `torso`.

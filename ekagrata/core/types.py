@@ -32,10 +32,11 @@ class CameraFrame:
     """One camera image with its timestamps. Live and video-file sources both produce this type."""
 
     frame_idx: int
-    t_host_ns: int  # live: perf_counter_ns() right after grab; file: equal to pts_ns
+    t_host_ns: int  # live: perf_counter_ns() right after retrieve() (frame arrival + decode); file: = pts_ns
     pts_ns: int | None  # container presentation timestamp from file start (file mode), else None
     dropped_before: int  # frames dropped by the capture queue since the previous delivered frame
     image: np.ndarray  # (H, W, 3) uint8, BGR
+    t_grab_ns: int | None = None  # live diagnostic: perf_counter_ns() after grab() (DSHOW: before arrival)
 
 
 @dataclass(frozen=True)

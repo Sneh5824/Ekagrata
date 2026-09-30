@@ -141,6 +141,8 @@ def main() -> int:
     combos = list(itertools.product(BACKENDS, SIZES, CODECS, EXPOSURES))
     print(f"Camera {args.camera}: {len(combos)} combinations x ({args.warmup}s warm-up + {args.seconds}s "
           f"measurement). Keep the scene and lighting constant.\n")
+    print(f"Camera: device index {args.camera}, backends dshow and msmf (sweep; the two backends may number "
+          "devices differently)")
     print("REQUESTED                         | DRIVER-REPORTED (not measured)                  | MEASURED")
     print("back  size      codec     exp |  size      fps   fourcc   auto   exp  set |     shape    fps  "
           "med_ms max_ms bright fail dups")

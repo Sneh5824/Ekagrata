@@ -151,3 +151,21 @@ def test_main_replay_end_to_end(tmp_path, capsys):
     assert set(msgs[0]["points"]) == {"r_shoulder", "r_wrist"} and msgs[5]["points"] == {}
     assert "Messages sent     : 16" in out and "Frames with pose  : 14" in out
     assert "axis mapping unverified until check_axes passes" in out
+
+
+def test_stage_durations_known_answers():
+    """Latency breakdown arithmetic on hand-made stamps (ns): each stage = difference of its two stamps."""
+    rows = []
+    for i in range(3):
+        g = i * 33_000_000
+        rows.append({"t_grab_ns": g, "t_host_ns": g + 4_000_000, "t_dequeue_ns": g + 10_000_000,
+                     "t_infer_start_ns": g + 10_100_000, "t_infer_end_ns": g + 40_100_000,
+                     "t_send_ns": g + 40_300_000, "t_sent_ns": g + 40_400_000})
+    d = stream.stage_durations_ms(rows)
+    assert np.allclose(d["grab -> retrieve end"], 4.0) and np.allclose(d["queue wait"], 6.0)
+    assert np.allclose(d["dequeue -> inference"], 0.1) and np.allclose(d["inference"], 30.0)
+    assert np.allclose(d["map + smooth"], 0.2) and np.allclose(d["encode + sendto"], 0.1)
+    assert np.allclose(d["t_host -> sent"], 36.4)
+    report = "\n".join(stream.stage_report(rows))
+    assert "queue wait / frame interval: median 0.18" in report  # 6 ms / 33 ms
+    assert stream.stage_report([]) == ["(no messages sent: no latency rows)"]
