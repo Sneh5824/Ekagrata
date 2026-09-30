@@ -293,6 +293,7 @@ of all landmarks; derivative of a known sinusoid within tolerance; NaN propagati
 filtfilt.
 **Acceptance:** [USER] 10 recorded smash-like swings → joint angle and angular-velocity plots; pronation column is
 NaN for camera; tests pass.
+**Open item (2026-09-30): gravity alignment of the camera frame is required before IMU fusion.** MediaPipe world axes follow the camera, so EKAGRATA "Z up" from `mp_to_world` currently means camera-up, not gravity-up. `check_axes.py` prints a camera pitch/roll ESTIMATE from the torso (assumes the torso is vertical when standing relaxed); `camera.yaml` has `camera_pitch_deg` / `camera_roll_deg` (spirit-level measurement), recorded but not yet applied.
 
 ---
 
@@ -408,6 +409,13 @@ tolerance); pure-Python keep-newest logic; mandatory headless smoke test with th
 **Acceptance:** [USER] replayed session and live camera visibly drive the raw camera shadow in Blender 5.0.1; the
 panel shows measured receive rate and message age.
 **Later reuse:** M5 may reuse the transport, add-on skeleton and court builder; M5's twin replaces the shadow.
+**Addition (2026-09-30, user-approved): side-by-side live view.** `cam_matched` (scene camera) placed like the
+real camera from `configs/blender.yaml matched_camera` (distance, height, yaw, horizontal FOV): because MediaPipe
+world axes follow the camera, the matched camera looks along −X with zero pitch; yaw 0 = matched view, other yaw
+= "alternative viewpoint". No mirroring anywhere. `scripts/live_shadow.py` launches Blender (auto-start via
+`blender/scripts/live_autostart.py`, UI sessions only) and the streamer with `--preview` ("EKAGRATA camera");
+`stream_to_blender.py --record` saves a replayable session. The figure shows posture only (hip-centred
+coordinates, no court translation).
 
 ---
 
@@ -473,6 +481,7 @@ tolerance (seeded); `ReplayImuSource(raw.bin)` reproduces the same samples as th
 calibration recovers injected mounting rotations (report angular error); IMU-only fusion with perfect sensors
 equals truth to numerical precision; complementary filter removes an injected yaw drift.
 **Acceptance:** E_SIM_fusion report generated, reproducible from a seed, clearly labelled simulated.
+**Open item carried from M2 (2026-09-30): gravity alignment of the camera frame is required before IMU fusion.** MediaPipe world axes follow the camera, so EKAGRATA "Z up" from `mp_to_world` currently means camera-up, not gravity-up. `check_axes.py` prints a camera pitch/roll ESTIMATE from the torso (assumes the torso is vertical when standing relaxed); `camera.yaml` has `camera_pitch_deg` / `camera_roll_deg` (spirit-level measurement), recorded but not yet applied.
 **Gate:** the only thing missing for real fusion is real hardware.
 
 ---

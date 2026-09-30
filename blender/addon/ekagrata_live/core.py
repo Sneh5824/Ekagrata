@@ -194,6 +194,36 @@ def run_summary(stats: LinkStats) -> dict:
             "age_capture_ms_median": median(cap), "age_capture_ms_p95": percentile(cap, 95)}
 
 
+POSTURE_NOTE = ("MediaPipe world coordinates are hip-centred; the figure shows posture only, not movement "
+                "around the court (no footwork/translation).")
+
+
+def is_matched_view(yaw_deg: float) -> bool:
+    return abs(yaw_deg) < 1e-9
+
+
+def matched_camera_pose(offset, distance_m: float, height_m: float, yaw_deg: float):
+    """Blender camera placement for the side-by-side view.
+
+    MediaPipe world axes follow the real camera, so (with the facing-camera mapping) the real camera looks
+    exactly along -X from the hips with zero pitch. The camera sits at hips + Rz(yaw) (distance, 0, height)
+    and looks along Rz(yaw) (-1, 0, 0), horizontally. yaw 0 = matched view; other values = alternative
+    viewpoint.
+
+    Returns (location (3,), forward (3,), rotation matrix rows (3x3)) where the matrix columns are the
+    camera's local X (screen right), Y (screen up) and Z (backward; Blender cameras look along local -Z) in
+    world axes."""
+    yaw = math.radians(yaw_deg)
+    c, s = math.cos(yaw), math.sin(yaw)
+    location = [offset[0] + distance_m * c, offset[1] + distance_m * s, offset[2] + height_m]
+    forward = [-c, -s, 0.0]
+    x_cam = [-s, c, 0.0]  # up x back: screen right (+Y at yaw 0, so the person's right arm is on screen-left)
+    y_cam = [0.0, 0.0, 1.0]
+    z_cam = [c, s, 0.0]  # = -forward
+    rows = [[x_cam[i], y_cam[i], z_cam[i]] for i in range(3)]
+    return location, forward, rows
+
+
 def link_transform(a, b):
     """Placement of a unit-height cylinder (along its local +Z, centred at its origin) spanning a -> b.
 

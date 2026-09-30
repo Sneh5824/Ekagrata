@@ -11,10 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from ekagrata.core.config import load_blender_config
+from ekagrata.core.config import load_blender_config, load_camera_config
 
 REPO = Path(__file__).resolve().parents[1]
 CFG = load_blender_config(REPO / "configs" / "blender.yaml")
+CAM = load_camera_config(REPO / "configs" / "camera.yaml")
 EXE = Path(CFG.blender_exe)
 
 pytestmark = pytest.mark.skipif(
@@ -45,15 +46,19 @@ def test_blender_version_matches_config():
 @pytest.fixture(scope="module")
 def scene(tmp_path_factory):
     out = tmp_path_factory.mktemp("blender") / "ekagrata_preview.blend"
-    r, log = run(_load("build_blender_preview").build_command(CFG, out))
+    r, log = run(_load("build_blender_preview").build_command(CFG, out, CAM))
     assert r.returncode == 0 and out.is_file(), log
     return out
 
 
 def test_scene_and_addon_smoke(scene):
+    mc = CFG.matched_camera
     r, log = run([EXE, "--background", "--factory-startup", scene, "--python-exit-code", "1",
                   "--python", REPO / "blender" / "tests" / "smoke_check.py", "--",
-                  "--offset", *(repr(v) for v in CFG.placement_offset_m), "--landmarks", *CFG.landmarks])
+                  "--offset", *(repr(v) for v in CFG.placement_offset_m), "--landmarks", *CFG.landmarks,
+                  "--cam", *(repr(v) for v in (mc.distance_m, mc.height_m, mc.yaw_deg,
+                                               mc.horizontal_fov_deg)),
+                  "--resolution", CAM.width, CAM.height])
     print("\n".join(ln for ln in r.stdout.splitlines() if "ok:" in ln or "EKAGRATA" in ln))
     assert r.returncode == 0 and "EKAGRATA SMOKE OK" in r.stdout, log
 
@@ -67,3 +72,13 @@ def test_packaged_addon_installs_legacy(tmp_path):
                   "--python", REPO / "blender" / "tests" / "install_check.py", "--", zip_path], env=env)
     print("\n".join(ln for ln in r.stdout.splitlines() if "EKAGRATA" in ln))
     assert r.returncode == 0 and "EKAGRATA INSTALL OK" in r.stdout, log
+
+
+def test_autostart_hook_only_in_ui_mode():
+    r, log = run([EXE, "--background", "--factory-startup", "--python-exit-code", "1",
+                  "--python", REPO / "blender" / "tests" / "autostart_check.py"])
+    print("\n".join(ln for ln in r.stdout.splitlines() if "ok:" in ln or "EKAGRATA" in ln))
+    assert r.returncode == 0 and "EKAGRATA AUTOSTART OK" in r.stdout, log
+    r, log = run([EXE, "--background", "--factory-startup", "--python-exit-code", "1",
+                  "--python", REPO / "blender" / "scripts" / "live_autostart.py", "--", "--port", "9870"])
+    assert r.returncode == 0 and "background mode: live auto-start skipped" in r.stdout, log

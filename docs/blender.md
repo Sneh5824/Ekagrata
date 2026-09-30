@@ -11,6 +11,9 @@ model. (The Digital Twin is M5, built on M4's `rig.json`.)
 Blender version: **5.0.1** at `D:/Video Editing/Blender/new b/blender.exe` (bundled Python 3.11.13), set in
 `configs/blender.yaml`. The add-on and scene scripts use only `bpy` and the Python standard library.
 
+> **Posture only.** MediaPipe world coordinates are hip-centred; the figure shows posture only, not movement
+> around the court (no footwork/translation).
+
 All commands are PowerShell, run from the repository root (`D:\dev\ekagrata`).
 
 ## 1. Build the scene
@@ -81,6 +84,52 @@ was the Iriun virtual camera (phone app running, showing its "waiting" screen) a
 so `device: 1`. The startup `Camera:` line prints the index and backend; the capture refuses a camera whose
 reported fourcc differs from the requested one or whose first frames are near-black. Uses the M1 capture + PoseLandmarker path with `configs/camera.yaml` (nothing is recorded). Add `--smooth` for
 the online One-Euro filter (`one_euro_*` in `configs/joints.yaml`).
+
+## Side-by-side live view
+
+Camera image (left) and the Blender raw camera shadow (right), seen from matching viewpoints, so the figure can
+be compared with the real person directly.
+
+```powershell
+uv run python scripts/live_shadow.py                  # builds the scene if missing
+uv run python scripts/live_shadow.py --rebuild        # after editing configs/blender.yaml
+uv run python scripts/live_shadow.py --record swings05 --athlete 002   # also record a replayable session
+```
+What happens: Blender 5.0.1 opens on the right half of the screen with `blender/ekagrata_preview.blend`, the
+EKAGRATA listener starts automatically (`blender/scripts/live_autostart.py`, only in a UI session) and the 3D
+view looks through **cam_matched** with grid/axes/cursor/relationship lines hidden. The window
+**"EKAGRATA camera"** opens on the left half with the skeleton overlay and the framing indicator. Ctrl+C in the
+terminal or **q** in the camera window stops the streamer; Blender stays open (its messages: Window > Toggle
+System Console). If the windows overlap: click one and press **Win+Left**, the other and press **Win+Right**.
+
+**No mirroring anywhere.** Both windows show the person as another person sees them: facing the camera, your
+right arm is on screen-LEFT in both. A mirrored view would hide axis errors. If the figure's arm moves on the
+other side from yours, that is an axis-mapping problem (run `scripts/check_axes.py`), not something to flip.
+
+**Matched viewpoint.** MediaPipe world axes follow the camera, so the real camera looks exactly along −X from
+the hips with zero pitch in this frame. `cam_matched` is placed at hips + (`distance_m`, 0, `height_m`) and looks
+along −X; `yaw_deg: 0` is the matched view, any other yaw is labelled an "alternative viewpoint". Measure and set
+in `configs/blender.yaml` → `matched_camera`, then `--rebuild`:
+- `distance_m`: horizontal distance from your hips to the camera lens (tape measure).
+- `height_m`: camera lens height minus your hip height (negative if the camera is lower).
+- `horizontal_fov_deg`: tape a ruler/tape of known width W on a wall, move the camera back until W exactly
+  spans the image width, measure the distance D from lens to wall: FOV = 2·atan(W / (2·D)) in degrees.
+  The shipped values are UNMEASURED placeholders.
+- **Level the camera** (spirit-level app on the phone/laptop lid): EKAGRATA "Z up" is currently camera-up, so a
+  tilted camera tilts the figure's world with it. `check_axes.py` prints a pitch/roll estimate from your torso
+  during the rest step; record a spirit-level measurement as `camera_pitch_deg` / `camera_roll_deg` in
+  `configs/camera.yaml` (recorded, not yet applied).
+- The figure is posture only (hip-centred): stepping around does not move it across the court.
+
+**Recording both windows for presentations (OBS Studio):** add two *Window Capture* sources — "EKAGRATA
+camera" (python.exe) and the Blender window — place them side by side on a 1920×1080 canvas, and record
+(Settings > Output; MKV is crash-safe, remux to MP4 afterwards). Label the video "raw camera shadow, not the
+Digital Twin". OBS adds CPU/GPU load: latency numbers measured while OBS records must be reported as such.
+
+**Recording the run for replay:** `--record NAME --athlete ID` writes `data/sessions/<date>_NAME_ID/` with
+`video/cam0.mp4`, `video/cam0_frames.csv`, `pose/cam0_landmarks.parquet` (raw, unsmoothed) and `session.json`
+(`timestamp_point: after_retrieve`). Replay later with
+`uv run python scripts/stream_to_blender.py --session data/sessions/<date>_NAME_ID --loop`.
 
 ## Latency breakdown method (basis for experiment E07)
 

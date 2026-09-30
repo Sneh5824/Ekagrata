@@ -9,13 +9,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ekagrata.core.config import BlenderConfig, ConfigError, load_blender_config
+from ekagrata.core.config import (
+    BlenderConfig,
+    CameraConfig,
+    ConfigError,
+    load_blender_config,
+    load_camera_config,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = REPO / "blender" / "scripts" / "build_preview_scene.py"
 
 
-def build_command(cfg: BlenderConfig, out: Path) -> list[str]:
+def build_command(cfg: BlenderConfig, out: Path, cam: CameraConfig) -> list[str]:
+    mc = cfg.matched_camera
     return [
         cfg.blender_exe, "--background", "--factory-startup", "--python-exit-code", "1",
         "--python", str(BUILD_SCRIPT), "--",
@@ -23,23 +30,28 @@ def build_command(cfg: BlenderConfig, out: Path) -> list[str]:
         "--offset", *(repr(v) for v in cfg.placement_offset_m),
         "--hitting-side", cfg.hitting_side,
         "--landmarks", *cfg.landmarks,
+        "--cam-distance", repr(mc.distance_m), "--cam-height", repr(mc.height_m),
+        "--cam-yaw", repr(mc.yaw_deg), "--cam-hfov", repr(mc.horizontal_fov_deg),
+        "--resolution", str(cam.width), str(cam.height),
     ]
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--config", type=Path, default=REPO / "configs" / "blender.yaml")
+    p.add_argument("--camera-config", type=Path, default=REPO / "configs" / "camera.yaml")
     p.add_argument("--out", type=Path, default=REPO / "blender" / "ekagrata_preview.blend")
     args = p.parse_args()
     try:
         cfg = load_blender_config(args.config)
+        cam = load_camera_config(args.camera_config)
     except ConfigError as exc:
         print(f"ERROR: {exc}")
         return 2
     if not Path(cfg.blender_exe).is_file():
         print(f"ERROR: blender_exe not found: {cfg.blender_exe} (edit {args.config})")
         return 2
-    result = subprocess.run(build_command(cfg, args.out.resolve()), capture_output=True, text=True,
+    result = subprocess.run(build_command(cfg, args.out.resolve(), cam), capture_output=True, text=True,
                             encoding="utf-8", errors="replace")
     for line in result.stdout.splitlines():
         if "EKAGRATA" in line or "Error" in line or "Traceback" in line:

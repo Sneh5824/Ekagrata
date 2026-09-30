@@ -20,6 +20,7 @@ from ekagrata.core.timebase import now_ns
 from ekagrata.io.camera import describe
 from ekagrata.io.session import SessionWriter, base_metadata, create_session, sha256_file
 from ekagrata.sources.pose import LiveCameraSource, VideoFileSource, pts_report
+from ekagrata.vision.framing import draw_framing, framing_status, wrist_edge
 from ekagrata.vision.pose_landmarker import (
     create_landmarker,
     detect,
@@ -155,6 +156,8 @@ def main() -> int:
                     if args.preview:
                         view = frame.image.copy()
                         draw_skeleton(view, pose)
+                        draw_framing(view, framing_status(pose.landmarks_img, args.handedness),
+                                     wrist_edge(pose.landmarks_img, args.handedness), args.handedness)
                         recent = t_stamps[-30:]
                         fps = (len(recent) - 1) / ((recent[-1] - recent[0]) * 1e-9) if len(recent) > 1 and \
                             recent[-1] > recent[0] else None

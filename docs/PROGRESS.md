@@ -201,7 +201,8 @@ Status values: TODO · IN PROGRESS · BLOCKED (reason) · DONE
   shoulder angles 0.0 %. Cause: hips never visible in that recording (median visibility l_hip 0.00, r_hip 0.00),
   so the torso frame is undefined. The script now prints this diagnosis.
 - [USER] steps still required (SPEC M2 acceptance):
-  1. `uv run python scripts/check_axes.py` — stand facing the laptop with hips visible; paste the output.
+  1. `uv run python scripts/check_axes.py` — stand facing the laptop, FULL BODY visible head to feet (the script
+     now aborts after the rest step if hips/right wrist are not visible); paste the output.
   2. Record ~10 smash-like swings with shoulders, HIPS and right arm in view:
      `uv run python scripts/record_session.py --athlete 002 --session swings01 --preview --seconds 40`.
   3. `uv run python scripts/compute_joints.py --session data\sessions\<date>_swings01_002` → paste the output
@@ -452,6 +453,105 @@ shadow only: Empties at raw landmark positions; no `rig.json`, no joint rotation
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
   ```
 
+### M2 framing fixes — 2026-09-30 (DONE; M2 itself stays IN PROGRESS)
+- Approved decisions: wrist warning at both edges; rest gate = MEDIAN visibility over the rest window;
+  added "near top" warning (yellow) when the hitting-side wrist is at y < 0.10, because the racket (not a
+  landmark, ~0.6 m above the wrist) is then already cut off.
+- Files changed:
+  - new: `ekagrata/vision/framing.py` (`framing_status`: visibility >= 0.5 AND inside the image, for both hips
+    + hitting-side elbow/wrist; `wrist_edge`: "above_top" y < 0 / "below_bottom" y > 1 / "near_top"
+    0 <= y < 0.10; `wrist_edge_message`: red "RIGHT WRIST ABOVE FRAME TOP" / "RIGHT WRIST BELOW FRAME BOTTOM",
+    yellow "RIGHT WRIST NEAR FRAME TOP - racket cut off"; `rest_gate`: median rule, no-pose frames count as 0;
+    `draw_framing`), `tests/test_framing.py` (14 tests, incl. near-top known answers at y = 0.0, 0.05,
+    0.10 − 1e-9 → near_top and y = 0.10 → none).
+  - `scripts/check_axes.py`: prompt/docstring "FULL BODY visible, head to feet"; collects l_hip, r_hip, r_wrist
+    visibility over the rest sample window and aborts (exit 1) right after the rest step if any median is
+    < 0.5, printing each failing landmark's median and "Step back or lower the camera…"; framing indicator in
+    the preview.
+  - `scripts/record_session.py`: framing indicator + wrist banner in `--preview` (side = `--handedness`).
+  - `scripts/stream_to_blender.py`: new live `--preview` (skeleton + framing indicator + banner, q/Esc stops;
+    off by default because it adds work to the timed loop); side = `hitting_side`; stale comment fixed.
+- Tests: `227 passed` · Ruff: `All checks passed!`
+- Visual check (agent, one real webcam frame through the real capture + PoseLandmarker, user seated at the
+  desk): indicator drawn top-right; `{'l_hip': False, 'r_hip': False, 'r_elbow': True, 'r_wrist': False}`,
+  wrist edge `None`. The check_axes abort and the previews were not run interactively by the agent.
+- Visibility report, `2026-09-30_swings03_002` (809 frames, pose in 100 %; recorded with index 1, dshow,
+  `timestamp_point` after_retrieve, 29.99 fps measured). Median vis / % vis > 0.5 / % above top (y < 0) /
+  % below bottom (y > 1):
+  - l_shoulder 1.000 / 100.0 / 0.0 / 0.0; r_shoulder 1.000 / 100.0 / 0.0 / 0.0
+  - l_hip 0.026 / 0.0 / 0.0 / 100.0; r_hip 0.040 / 0.0 / 0.0 / 100.0
+  - r_elbow 0.996 / 95.1 / 0.0 / 0.0; r_wrist 0.599 / 77.6 / 0.0 / 21.9
+  → hips were below the bottom edge in every frame; the right wrist left at the BOTTOM (never the top).
+  The camera needs to be further away and/or lower (full body in view) before the M2 [USER] recordings.
+- [USER] next (M2): run `uv run python scripts/check_axes.py` standing head to feet in view; then record the
+  swings with `record_session.py --preview` and keep all four indicators green.
+- Suggested commit message:
+  ```
+  M2 framing: check_axes full-body prompt + rest gate, framing indicator and wrist-edge warnings in previews
+
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  ```
+
+### Side-by-side live view (out-of-order feature on M5-preview, user-approved) — 2026-09-30 (DONE; [USER] check open)
+- Approved decisions: `cam_matched` looks along −X with zero pitch (MediaPipe world axes follow the camera);
+  yaw 0 = matched view, other yaw = "alternative viewpoint"; no mirroring anywhere. Additions: camera-tilt
+  DIAGNOSTIC in check_axes (no convention change), `camera_pitch_deg`/`camera_roll_deg` in camera.yaml (not
+  applied), SPEC open item "gravity alignment of the camera frame is required before IMU fusion" (M2 and M7),
+  posture-only note (docs + Blender console on autostart).
+- Files changed:
+  - new: `scripts/live_shadow.py` (launcher: build if missing / `--rebuild` / warns if configs are newer than the
+    .blend; Blender in its own console with `--window-geometry`; streamer with `--preview`; prints window
+    placement + Win+Left/Win+Right reminder + both labels), `blender/scripts/live_autostart.py`
+    (`install(background)`; UI-only `bpy.app.timers` callback: registers the add-on from `blender/addon` if
+    needed, `live_start`, camera view through cam_matched, overlays reduced, prints axis caveat + posture note),
+    `blender/tests/autostart_check.py`, `ekagrata/vision/camera_tilt.py`, `tests/test_camera_tilt.py`,
+    `tests/test_live_shadow.py`.
+  - modified: `configs/blender.yaml` (`matched_camera`: distance_m 2.5, height_m 0.3, yaw_deg 0,
+    horizontal_fov_deg 70 — distance/height/FOV are UNMEASURED PLACEHOLDERS), `configs/camera.yaml`
+    (`camera_pitch_deg`/`camera_roll_deg` 0), `ekagrata/core/config.py` (`MatchedCamera`, tilt fields),
+    `blender/addon/ekagrata_live/core.py` (`matched_camera_pose`, `is_matched_view`, `POSTURE_NOTE`),
+    `blender/scripts/build_preview_scene.py` (`cam_matched` = scene camera, horizontal FOV, render resolution =
+    camera.yaml; label moved to face cam_matched), `scripts/build_blender_preview.py` (camera args),
+    `scripts/stream_to_blender.py` (window "EKAGRATA camera", `--preview-geometry`, `--record NAME --athlete ID`
+    via M1 session code, recording after the UDP send, breakdown header says "preview on"/"recording on"),
+    `scripts/check_axes.py` (tilt estimate printed after the rest gate passes), `blender/tests/smoke_check.py`,
+    tests (`test_config.py`, `test_blender_live_core.py`, `test_stream_replay.py`, `test_blender_smoke.py`),
+    `docs/SPEC.md` (M5-preview addition, M2 + M7 open item), `docs/blender.md` ("Side-by-side live view",
+    OBS recipe, FOV/distance/height measurement, level the camera, posture-only note).
+- Tests: `247 passed` · Ruff: `All checks passed!`
+- Real-Blender smoke (part of the suite): `ok: scene camera is cam_matched`, `ok: cam_matched at (-1.5, 0.0, 1.3)`,
+  `ok: cam_matched looks along (-1.0, -0.0, 0.0)`, `ok: cam_matched has zero pitch`, `ok: cam_matched horizontal
+  FOV 70.0 deg`, `ok: render resolution 1280x720`, `ok: cam_matched labelled 'matched view'`, all 13 landmark
+  Empties inside the cam_matched frame, `ok: right shoulder on screen-left (no mirroring)`; autostart:
+  `ok: background mode -> no auto-start timer`, `ok: UI mode -> auto-start timer registered (then
+  unregistered)`, and `live_autostart.py` run with `-b` prints `background mode: live auto-start skipped`.
+- Agent GUI runs of `live_shadow.py --seconds 15` (user at the desk, seated):
+  - 1st run found a layout bug: the launcher had made itself DPI-aware (physical px) while the OpenCV window is
+    DPI-unaware (logical px; measured: awareness 0, work area 1536x816 logical, display scale 1.25), so the
+    camera window was 1.25x too wide and covered Blender. Fixed: layout in logical px, OpenCV image area shrunk
+    by the measured window frame (16 x 39 px), Blender geometry scaled to physical px.
+  - 2nd run: camera window x 0..~950 and Blender from x 960 (physical; screenshot), Blender in camera view
+    through cam_matched with the figure following the live pose; the raised LEFT arm appeared on screen-right in
+    both windows (consistent, no mirroring). Streamer: `Frames with pose : 367 (81.4 %)`, `Capture fps : 29.99`,
+    `Send rate : 30.01 Hz`, inference 18.32 / 20.38 ms, t_host → sent 19.04 / 21.25 ms (median / p95,
+    preview on). The figure appeared small/high because distance, height and FOV are placeholders.
+  - `--record` checked into a scratch folder (not data/sessions): `2026-09-30_rectest_002` with session.json
+    (`device 1, dshow, timestamp_point after_retrieve, measured_fps 30.05`, 151 frames), cam0_frames.csv,
+    cam0_landmarks.parquet, cam0.mp4; replay of it: `Replaying 151 frames (4.99 s)`, 60 messages in 2 s.
+    (0 % pose in that clip: nobody in view.)
+- Not verified by the agent: check_axes tilt estimate and rest gate with a standing person (needs you); the
+  Blender console output of autostart in the GUI (own console; the live pose in the screenshot shows the
+  listener ran).
+- [USER] next: measure distance_m, height_m, horizontal_fov_deg (procedure in docs/blender.md) and level the
+  camera; `uv run python scripts/live_shadow.py --rebuild`; confirm your right arm is on screen-left in BOTH
+  windows and the figure overlays your posture; this also covers the open M5-preview acceptance steps.
+- Suggested commit message:
+  ```
+  Side-by-side live view: cam_matched (-X, zero pitch), live_shadow launcher + autostart, --record, tilt diagnostic
+
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+  ```
+
 ## Open questions for the user
 - RESOLVED 2026-09-30: `--camera` is optional in `record_session.py`, `stream_to_blender.py`, `check_env.py`
   and `check_axes.py` (default = `camera.yaml` `device`).
@@ -466,3 +566,5 @@ shadow only: Empties at raw landmark positions; no `rig.json`, no joint rotation
   and latency investigation"). Fixed: see "Camera guard + timestamp fix". Note the index SHIFTED: on
   2026-09-29 Iriun was index 1, on 2026-09-30 index 0.
 - RESOLVED 2026-09-30: keep the message field `source`; documented in SPEC M5-preview and M5.
+- 2026-09-30: camera placement for the side-by-side view (`matched_camera` distance/height/FOV) and the camera
+  tilt are unmeasured; values in the configs are placeholders until you measure them.

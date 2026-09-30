@@ -4,10 +4,13 @@ Run with Blender 5.0 (bpy + standard library only), normally via scripts/build_b
   blender --background --factory-startup --python-exit-code 1
       --python blender/scripts/build_preview_scene.py --
       --out blender/ekagrata_preview.blend --offset -4.0 0.0 1.0 --hitting-side right
-      --landmarks nose l_shoulder ...
+      --landmarks nose l_shoulder ... --cam-distance 2.5 --cam-height 0.3 --cam-yaw 0 --cam-hfov 70
+      --resolution 1280 720
 
 Scene (EKAGRATA world: X toward the net, Y left, Z up, metres): floor, singles court lines (13.40 x 5.18 m),
-net (1.524 m at centre), lights, camera, one Empty 'lm_<name>' per landmark and one unit cylinder
+net (1.524 m at centre), lights, cameras ('cam_matched' = scene camera, matching the real camera for
+the side-by-side view; 'camera' = three-quarter overview), one Empty 'lm_<name>' per landmark and one unit
+cylinder
 'link_<a>__<b>' per stick-figure link, all parented to 'shadow_root' at the placement offset. The Empties
 start in a PLACEHOLDER pose (not data) until the live link applies a message.
 """
@@ -18,7 +21,7 @@ import sys
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 from ekagrata_live import core  # noqa: E402  (after sys.path setup; core.py is stdlib-only)
@@ -64,6 +67,12 @@ def parse_args(argv):
     p.add_argument("--offset", type=float, nargs=3, default=(-4.0, 0.0, 1.0), metavar=("X", "Y", "Z"))
     p.add_argument("--hitting-side", choices=("right", "left"), default="right")
     p.add_argument("--landmarks", nargs="+", default=list(PLACEHOLDER))
+    p.add_argument("--cam-distance", type=float, default=2.5, help="matched camera: hips -> lens, m")
+    p.add_argument("--cam-height", type=float, default=0.3, help="matched camera: lens minus hip height, m")
+    p.add_argument("--cam-yaw", type=float, default=0.0, help="0 = matched view; else alternative viewpoint")
+    p.add_argument("--cam-hfov", type=float, default=70.0, help="matched camera horizontal FOV, degrees")
+    p.add_argument("--resolution", type=int, nargs=2, default=(1280, 720), metavar=("W", "H"),
+                   help="render resolution = real camera resolution (same aspect ratio)")
     args = p.parse_args(argv)
     unknown = [n for n in args.landmarks if n not in PLACEHOLDER]
     if unknown:
@@ -170,10 +179,10 @@ def build_label(col, mats, offset):
     curve = bpy.data.curves.new("shadow_label", type="FONT")
     curve.body = LABEL
     curve.align_x = "CENTER"
-    curve.size = 0.14
+    curve.size = 0.09
     obj = bpy.data.objects.new("shadow_label", curve)
-    obj.location = (offset[0] - 0.8, offset[1] + 0.8, offset[2] + 1.1)
-    obj.rotation_euler = (math.radians(90.0), 0.0, math.radians(45.0))  # text faces the camera
+    obj.location = (offset[0] - 0.8, offset[1], offset[2] + 0.95)  # behind and above the figure
+    obj.rotation_euler = (math.radians(90.0), 0.0, math.radians(90.0))  # text faces +X (cam_matched)
     obj.data.materials.append(mats["label"])
     col.objects.link(obj)
 
@@ -195,7 +204,33 @@ def build_view(scene, col, offset):
     obj.rotation_mode = "QUATERNION"
     obj.rotation_quaternion = (target - obj.location).to_track_quat("-Z", "Y")
     col.objects.link(obj)
+
+
+def build_matched_camera(scene, col, offset, args):
+    """'cam_matched': where the real camera is, looking along -X with zero pitch (see
+    core.matched_camera_pose). It becomes the scene camera. No mirroring: screen right = +Y, so the person's
+    right arm is on screen-left."""
+    location, _forward, rows = core.matched_camera_pose(offset, args.cam_distance, args.cam_height,
+                                                         args.cam_yaw)
+    cam = bpy.data.cameras.new("cam_matched")
+    cam.sensor_fit = "HORIZONTAL"
+    cam.angle = math.radians(args.cam_hfov)  # horizontal FOV because sensor_fit is HORIZONTAL
+    cam.clip_start = 0.05
+    cam.clip_end = 100.0
+    obj = bpy.data.objects.new("cam_matched", cam)
+    obj.location = location
+    obj.rotation_mode = "QUATERNION"
+    obj.rotation_quaternion = Matrix(rows).to_quaternion()
+    matched = core.is_matched_view(args.cam_yaw)
+    obj["ekagrata_view"] = "matched view" if matched else "alternative viewpoint"
+    obj["ekagrata_camera"] = (f"distance {args.cam_distance} m, height {args.cam_height} m, "
+                              f"yaw {args.cam_yaw} deg, horizontal FOV {args.cam_hfov} deg "
+                              "(from configs/blender.yaml)")
+    col.objects.link(obj)
     scene.camera = obj
+    scene.render.resolution_x, scene.render.resolution_y = args.resolution
+    scene.render.resolution_percentage = 100
+    return matched
 
 
 def main():
@@ -212,12 +247,14 @@ def main():
     build_shadow(shadow, mats, tuple(args.offset), args.landmarks, args.hitting_side)
     build_label(shadow, mats, tuple(args.offset))
     build_view(scene, view, tuple(args.offset))
+    matched = build_matched_camera(scene, view, tuple(args.offset), args)
     scene["ekagrata_scene"] = "raw camera shadow (M5-preview), NOT the Digital Twin"
     scene["ekagrata_axis_caveat"] = core.AXIS_CAVEAT
     out = Path(args.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(out))
     print(f"[EKAGRATA] raw camera shadow scene saved: {out} ({len(bpy.data.objects)} objects)")
+    print(f"[EKAGRATA] scene camera: cam_matched ({'matched view' if matched else 'alternative viewpoint'})")
     print(f"[EKAGRATA] {core.AXIS_CAVEAT}")
 
 

@@ -13,3 +13,13 @@ landmarks: [nose, l_shoulder, r_shoulder, l_elbow, r_elbow, l_wrist, r_wrist,
 # landmarks have their origin at the hip midpoint, so Z = 1.0 is a DISPLAY lift to roughly hip height, not a
 # measurement. X = -4.0 puts the figure in one half of the singles court (net at X = 0).
 placement_offset_m: [-4.0, 0.0, 1.0]
+# Side-by-side live view: Blender camera "cam_matched" placed like the real camera. MediaPipe world axes follow
+# the camera, so the real camera looks exactly along -X from the hips (zero pitch in this frame): yaw_deg 0 is
+# the MATCHED view; any other yaw is an "alternative viewpoint". Level the real camera (see docs/blender.md).
+# distance_m, height_m and horizontal_fov_deg are UNMEASURED PLACEHOLDERS: measure them (docs/blender.md)
+# and rebuild the scene (scripts/build_blender_preview.py or scripts/live_shadow.py --rebuild).
+matched_camera:
+  distance_m: 2.5            # PLACEHOLDER: horizontal distance hips -> camera lens
+  height_m: 0.3              # PLACEHOLDER: camera lens height minus hip height
+  yaw_deg: 0.0               # 0 = matched view
+  horizontal_fov_deg: 70.0   # PLACEHOLDER: real camera horizontal field of view, not measured

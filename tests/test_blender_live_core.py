@@ -157,3 +157,26 @@ def test_run_summary_keeps_whole_run_after_window_expires():
     assert run["n"] == 4 and run["age_send_ms_median"] == pytest.approx(2.5)
     assert run["age_send_ms_p95"] == pytest.approx(4.0)
     assert run["age_capture_ms_median"] == pytest.approx(10.0)
+
+
+
+def test_matched_camera_pose_yaw0():
+    loc, fwd, rows = core.matched_camera_pose([-4.0, 0.0, 1.0], 2.5, 0.3, 0.0)
+    assert np.allclose(loc, [-1.5, 0.0, 1.3]) and np.allclose(fwd, [-1, 0, 0])
+    m = np.array(rows)
+    assert np.allclose(m @ m.T, np.eye(3)) and np.isclose(np.linalg.det(m), 1.0)
+    assert np.allclose(m @ [0, 0, -1], fwd)  # Blender cameras look along local -Z
+    assert np.allclose(m[:, 0], [0, 1, 0])  # screen right = +Y: the person's right (-Y) is on screen-left
+    assert np.allclose(m[:, 1], [0, 0, 1])  # screen up = Z, zero pitch and roll
+    assert core.is_matched_view(0.0) and not core.is_matched_view(90.0)
+
+
+def test_matched_camera_pose_yaw90_is_alternative_viewpoint():
+    loc, fwd, rows = core.matched_camera_pose([0.0, 0.0, 0.0], 2.0, -0.5, 90.0)
+    assert np.allclose(loc, [0.0, 2.0, -0.5]) and np.allclose(fwd, [0, -1, 0])
+    m = np.array(rows)
+    assert np.allclose(m @ [0, 0, -1], fwd) and np.allclose(m[:, 0], [-1, 0, 0])
+
+
+def test_posture_note_text():
+    assert "hip-centred" in core.POSTURE_NOTE and "posture only" in core.POSTURE_NOTE

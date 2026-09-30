@@ -23,3 +23,7 @@ mp_to_world:
 #   0 duplicate frames, mean brightness 58.0/255 in that scene. Re-run the probe if the lighting changes.
 exposure_auto: false   # null = leave driver setting; true/false to switch auto-exposure
 exposure: -6.0         # null = leave driver setting; DSHOW uses log2(seconds): -6 = 1/64 s
+# Camera tilt w.r.t. gravity: measure with a spirit-level app; not yet applied (EKAGRATA "Z up" is currently
+# camera-up; gravity alignment is an open item, SPEC M2/M7). check_axes.py prints an estimate from the torso.
+camera_pitch_deg: 0.0  # positive = camera looks down
+camera_roll_deg: 0.0   # positive = camera rotated clockwise, seen from behind the camera

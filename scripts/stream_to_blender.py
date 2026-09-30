@@ -5,6 +5,10 @@ Live (M1 capture + PoseLandmarker path; nothing is recorded; camera = `device` i
 Replay a recorded session in real time (from t_sync_ns):
   uv run python scripts/stream_to_blender.py --session data/sessions/<dir> --loop
 Add --smooth for the online One-Euro filter (parameters from configs/joints.yaml). Stop with Ctrl+C.
+Live --preview shows the camera ("EKAGRATA camera" window) with skeleton and framing indicator (q / Esc stops;
+off by default because it adds work to the timed loop). Live --record NAME --athlete ID also saves the camera
+video, frames CSV and (unsmoothed) landmarks into a new session folder (M1 session code), so the run can be
+replayed later with --session. Side-by-side view with Blender: scripts/live_shadow.py.
 Live mode prints a per-stage latency breakdown on exit (--timing-csv PATH also writes the per-frame stamps);
 method in docs/blender.md.
 Points are mapped with camera.yaml mp_to_world: axis mapping unverified until check_axes passes.
@@ -22,11 +26,18 @@ import pandas as pd
 from ekagrata.analysis.filters import OneEuroFilter
 from ekagrata.core.config import ConfigError, load_blender_config, load_camera_config, load_joints_config
 from ekagrata.core.timebase import now_ns
-from ekagrata.io.session import LANDMARKS_PARQUET
+from ekagrata.io.session import (
+    LANDMARKS_PARQUET,
+    SessionWriter,
+    base_metadata,
+    create_session,
+    sha256_file,
+)
 from ekagrata.transport.udp_twin import UdpTwinSender, world_points
 from ekagrata.vision.landmark_map import N_LANDMARKS
 
 AXIS_CAVEAT = "axis mapping unverified until check_axes passes"
+PREVIEW_WINDOW = "EKAGRATA camera"
 COARSE_SLEEP_MARGIN_NS = 2_000_000  # sleep until ~1 ms before the target, then yield-spin to it
 
 # Live latency stamps (host perf_counter_ns, one row per SENT message) and the stages derived from them.
@@ -60,11 +71,25 @@ def parse_args(argv=None):
     p.add_argument("--models-dir", type=Path, default=Path("models"))
     p.add_argument("--model", choices=("lite", "full", "heavy"), help="PoseLandmarker variant (live)")
     p.add_argument("--timing-csv", type=Path, help="live: write per-frame latency stamps to this CSV")
+    p.add_argument("--preview", action="store_true",
+                   help="live: preview with skeleton + framing indicator (adds work to the timed loop)")
+    p.add_argument("--preview-geometry", type=int, nargs=4, metavar=("X", "Y", "W", "H"),
+                   help="live: place/size the preview window (screen pixels, top-left origin)")
+    p.add_argument("--record", metavar="NAME",
+                   help="live: also record a session named NAME (video, frames CSV, landmarks, session.json)")
+    p.add_argument("--athlete", help="athlete id for --record (letters, digits, '-')")
+    p.add_argument("--sessions-dir", type=Path, default=Path("data/sessions"))
     args = p.parse_args(argv)
     if args.camera is not None and args.camera < 0:
         p.error("--camera must be >= 0")
     if args.seconds is not None and args.seconds <= 0:
         p.error("--seconds must be > 0")
+    if (args.preview or args.record) and args.session is not None:
+        p.error("--preview and --record only apply to live mode")
+    if args.record and not args.athlete:
+        p.error("--record needs --athlete")
+    if args.preview_geometry and not args.preview:
+        p.error("--preview-geometry needs --preview")
     if args.loop and args.session is None:
         p.error("--loop only applies to --session")
     return args
@@ -199,11 +224,15 @@ def stream_replay(args, bcfg, cam, sender, smooth) -> dict:
 
 def stream_live(args, bcfg, cam, sender, smooth) -> dict:
     # Imported here so replay does not load OpenCV / MediaPipe.
+    import cv2
+
     from ekagrata.io.camera import describe
     from ekagrata.sources.pose import LiveCameraSource
+    from ekagrata.vision.framing import draw_framing, framing_status, wrist_edge
     from ekagrata.vision.pose_landmarker import (
         create_landmarker,
         detect,
+        draw_skeleton,
         has_pose,
         model_path,
         video_timestamp_ms,
@@ -222,7 +251,31 @@ def stream_live(args, bcfg, cam, sender, smooth) -> dict:
     info = source.info()
     print(f"        requested {info['requested']}, timestamp point {info['timestamp_point']}")
     print(f"        driver-reported (not measured) {info['reported']}")
-    stats = {"frames_processed": 0, "frames_with_pose": 0, "stop_reason": "end of input", "timing": []}
+    stats = {"frames_processed": 0, "frames_with_pose": 0, "stop_reason": "end of input", "timing": [],
+             "recording": bool(args.record)}
+    writer, video_writer = None, None
+    if args.record:
+        try:
+            meta = base_metadata(args.record, args.athlete, bcfg.hitting_side)
+            meta["camera"] = {**info, "mode": "live"}
+            meta["model"] = {"name": mpath.name, "variant": args.model or cam.model_variant,
+                             "file_sha256": sha256_file(mpath)}
+            meta["notes"] = ("recorded by stream_to_blender.py --record (side-by-side live view); "
+                             "landmarks are raw (unsmoothed); the UDP stream to Blender is not recorded")
+            session_dir = create_session(args.sessions_dir, args.record, args.athlete, meta)
+        except (FileExistsError, ValueError):
+            source.close()
+            landmarker.close()
+            raise
+        writer = SessionWriter(session_dir)
+        stats["session_dir"] = str(session_dir)
+        print(f"Recording session: {session_dir}")
+    if args.preview:
+        cv2.namedWindow(PREVIEW_WINDOW, cv2.WINDOW_NORMAL)
+        if args.preview_geometry:
+            x, y, w, h = args.preview_geometry
+            cv2.moveWindow(PREVIEW_WINDOW, x, y)
+            cv2.resizeWindow(PREVIEW_WINDOW, w, h)
     t0, last_ms = None, None
     try:
         for frame in source.frames():
@@ -232,7 +285,7 @@ def stream_live(args, bcfg, cam, sender, smooth) -> dict:
                 stats["stop_reason"] = "--seconds reached"
                 break
             last_ms = video_timestamp_ms(frame.t_host_ns, t0, last_ms)
-            # As in M1: no clock sync yet, t_sync_ns = host QPC clock at grab (Blender shows capture age).
+            # No clock sync yet: t_sync_ns = host QPC clock after retrieve (Blender shows capture age).
             t_infer_start = now_ns()
             pose = detect(landmarker, frame, last_ms, frame.t_host_ns)  # incl. BGR->RGB + mp.Image
             t_infer_end = now_ns()
@@ -246,6 +299,24 @@ def stream_live(args, bcfg, cam, sender, smooth) -> dict:
                     "frame_idx": frame.frame_idx, "dropped_before": frame.dropped_before, "pose": int(ok)})
             stats["frames_processed"] += 1
             stats["frames_with_pose"] += int(ok)
+            if args.preview:
+                side = bcfg.hitting_side
+                view = frame.image.copy()
+                draw_skeleton(view, pose)
+                draw_framing(view, framing_status(pose.landmarks_img, side),
+                             wrist_edge(pose.landmarks_img, side), side)
+                cv2.imshow(PREVIEW_WINDOW, view)  # raw frame, never mirrored
+            if writer is not None:  # after the UDP send, so recording does not delay the Blender update
+                writer.add(frame, pose)
+                if video_writer is None:
+                    # Container fps is nominal (requested); true frame times are in cam0_frames.csv.
+                    h, w = frame.image.shape[:2]
+                    video_writer = cv2.VideoWriter(str(Path(stats["session_dir"]) / "video" / "cam0.mp4"),
+                                                   cv2.VideoWriter_fourcc(*"mp4v"), float(cam.fps), (w, h))
+                video_writer.write(frame.image)
+            if args.preview and cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                stats["stop_reason"] = "user stopped (q/Esc)"
+                break
     except KeyboardInterrupt:
         stats["stop_reason"] = "Ctrl+C"
     finally:
@@ -253,6 +324,16 @@ def stream_live(args, bcfg, cam, sender, smooth) -> dict:
         stats["frames_dropped"] = source.capture.dropped
         source.close()
         landmarker.close()
+        if video_writer is not None:
+            video_writer.release()
+        if writer is not None:
+            writer.finalize({"summary": {
+                "stop_reason": stats["stop_reason"], "frames_processed": stats["frames_processed"],
+                "frames_with_pose": stats["frames_with_pose"], "frames_captured": source.capture.captured,
+                "frames_dropped": stats["frames_dropped"], "capture_fps_measured": stats["capture_fps"]},
+                "camera": {**info, "mode": "live", "measured_fps": stats["capture_fps"]}})
+        if args.preview:
+            cv2.destroyAllWindows()
     return stats
 
 
@@ -274,7 +355,7 @@ def main(argv=None) -> int:
             stats = stream_replay(args, bcfg, cam, sender, smooth)
         else:
             stats = stream_live(args, bcfg, cam, sender, smooth)
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+    except (FileNotFoundError, FileExistsError, ValueError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
         return 2
     finally:
@@ -293,11 +374,15 @@ def main(argv=None) -> int:
     if "lateness_ms" in stats:
         med, p95, mx = stats["lateness_ms"]
         print(f"Replay lateness   : median {med:.3f} ms, p95 {p95:.3f} ms, max {mx:.3f} ms (vs schedule)")
+    if stats.get("session_dir"):
+        print(f"Recorded session  : {stats['session_dir']} (replay: --session <that folder>)")
     if "capture_fps" in stats:
         print(f"Capture fps       : {fmt(stats['capture_fps'])} (measured from frame timestamps)")
         print(f"Frames dropped    : {stats['frames_dropped']} (capture queue full)")
     if "timing" in stats:
-        print("\n=== Latency breakdown (host perf_counter_ns, measured; t_host = after retrieve) ===")
+        extras = ", ".join(n for n, on in (("preview on", args.preview), ("recording on", args.record)) if on)
+        print("\n=== Latency breakdown (host perf_counter_ns, measured; t_host = after retrieve"
+              f"{'; ' + extras if extras else ''}) ===")
         print("\n".join(stage_report(stats["timing"])))
         print("Blender adds send -> apply: see the add-on's 'age since send' (panel / console on Stop).")
         if args.timing_csv is not None and stats["timing"]:

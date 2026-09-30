@@ -3,6 +3,7 @@
 
   blender --background --factory-startup <scene.blend> --python-exit-code 1
       --python blender/tests/smoke_check.py -- --offset X Y Z --landmarks nose l_shoulder ...
+      --cam DISTANCE HEIGHT YAW HFOV --resolution W H
 
 Driven by tests/test_blender_smoke.py. Any failed check raises, so Blender exits with code 1. Prints
 'EKAGRATA SMOKE OK' on success.
@@ -16,6 +17,7 @@ import time
 from pathlib import Path
 
 import bpy
+from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
@@ -40,12 +42,14 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--offset", type=float, nargs=3, required=True)
     p.add_argument("--landmarks", nargs="+", required=True)
+    p.add_argument("--cam", type=float, nargs=4, required=True, metavar=("DIST", "HEIGHT", "YAW", "HFOV"))
+    p.add_argument("--resolution", type=int, nargs=2, required=True)
     return p.parse_args(argv)
 
 
 def check_scene(landmarks):
     objs = bpy.data.objects
-    expected = ["floor", "net", "sun_key", "sun_fill", "camera", "shadow_root", "shadow_label",
+    expected = ["floor", "net", "sun_key", "sun_fill", "camera", "cam_matched", "shadow_root", "shadow_label",
                 "line_baseline_neg", "line_baseline_pos", "line_side_left", "line_side_right",
                 "line_short_service_neg", "line_short_service_pos", "line_centre_neg", "line_centre_pos"]
     expected += [core.empty_name(n) for n in landmarks]
@@ -53,7 +57,7 @@ def check_scene(landmarks):
     missing = [n for n in expected if n not in objs]
     check(not missing, f"all {len(expected)} expected objects exist (missing: {missing})")
     check(all(objs[core.empty_name(n)].type == "EMPTY" for n in landmarks), "landmarks are Empties")
-    check(bpy.context.scene.camera is objs["camera"], "scene camera set")
+    check(bpy.context.scene.camera is objs["cam_matched"], "scene camera is cam_matched")
     xs = [v.co.x for v in objs["line_side_left"].data.vertices]
     check(math.isclose(min(xs), -6.70, abs_tol=1e-6) and math.isclose(max(xs), 6.70, abs_tol=1e-6),
           "side line spans the 13.40 m court length")
@@ -67,6 +71,35 @@ def check_scene(landmarks):
     hit = [o.name for o in objs if o.name.startswith("link_") and o.active_material.name == "mat_hitting"]
     check(sorted(hit) == sorted(core.link_name(a, b) for a, b in core.links_for(landmarks)
                                 if core.is_hitting_arm(a, b, "right")), f"hitting-arm links coloured: {hit}")
+
+
+def check_matched_camera(offset, landmarks, cam_args, resolution):
+    """cam_matched: expected pose, looks along the expected direction, horizontal FOV, sees the figure, and
+    the person's right side is on screen-left (no mirroring)."""
+    scene = bpy.context.scene
+    obj = bpy.data.objects["cam_matched"]
+    dist, height, yaw, hfov = cam_args
+    location, forward, _ = core.matched_camera_pose(offset, dist, height, yaw)
+    bpy.context.view_layer.update()
+    m = obj.matrix_world
+    check(close(m.translation, location), f"cam_matched at {tuple(round(c, 4) for c in location)}")
+    look = (m.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+    check(close(look, forward, 1e-6), f"cam_matched looks along {tuple(round(c, 4) for c in forward)}")
+    check(abs(look.z) < 1e-9, "cam_matched has zero pitch")
+    check(obj.data.sensor_fit == "HORIZONTAL" and math.isclose(obj.data.angle_x, math.radians(hfov),
+                                                               abs_tol=1e-6),
+          f"cam_matched horizontal FOV {hfov} deg")
+    check((scene.render.resolution_x, scene.render.resolution_y) == tuple(resolution),
+          f"render resolution {resolution[0]}x{resolution[1]} (real camera aspect)")
+    view = "matched view" if core.is_matched_view(yaw) else "alternative viewpoint"
+    check(obj["ekagrata_view"] == view, f"cam_matched labelled '{view}'")
+    uv = {}
+    for n in landmarks:
+        p = world_to_camera_view(scene, obj, bpy.data.objects[core.empty_name(n)].matrix_world.translation)
+        uv[n] = p
+        check(0.0 < p.x < 1.0 and 0.0 < p.y < 1.0 and p.z > 0.0, f"{n} inside the cam_matched frame")
+    if core.is_matched_view(yaw):
+        check(uv["r_shoulder"].x < uv["l_shoulder"].x, "right shoulder on screen-left (no mirroring)")
 
 
 def check_apply(offset, landmarks):
@@ -127,6 +160,7 @@ def main():
     args = parse_args()
     print(f"[EKAGRATA smoke] Blender {bpy.app.version_string}, Python {sys.version.split()[0]}")
     check_scene(args.landmarks)
+    check_matched_camera(args.offset, args.landmarks, args.cam, args.resolution)
     ekagrata_live.register()
     try:
         check(hasattr(bpy.types, "EKAGRATA_PT_live") and hasattr(bpy.ops.ekagrata, "live_start"),

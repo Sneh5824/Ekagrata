@@ -28,6 +28,10 @@ class CameraConfig:
     mp_to_world: tuple  # 3x3 rotation, MediaPipe world axes -> EKAGRATA world (see vision/landmark_map.py)
     exposure_auto: bool | None = None  # None = leave the driver setting untouched
     exposure: float | None = None  # driver-specific units (DSHOW: log2 seconds); None = untouched
+    # Camera tilt w.r.t. gravity, measured with a spirit-level app. Recorded only: NOT yet applied anywhere
+    # (EKAGRATA "Z up" is currently camera-up; gravity alignment is an open item, SPEC M2/M7).
+    camera_pitch_deg: float = 0.0  # positive = camera looks down
+    camera_roll_deg: float = 0.0  # positive = camera rotated clockwise, seen from behind the camera
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,11 @@ def load_camera_config(path) -> CameraConfig:
     if data.get("exposure") is not None:
         _require(path, "exposure", data["exposure"], (int, float))
         data["exposure"] = float(data["exposure"])
+    for key in ("camera_pitch_deg", "camera_roll_deg"):
+        if key in data:
+            _require(path, key, data[key], (int, float), lambda v: -90 < v < 90,
+                     "must be in (-90, 90) degrees")
+            data[key] = float(data[key])
     try:
         m = validate_rotation(data["mp_to_world"])
     except (ValueError, TypeError) as exc:
@@ -129,6 +138,18 @@ HITTING_SIDES = ("right", "left")
 
 
 @dataclass(frozen=True)
+class MatchedCamera:
+    """Blender camera matching the real camera (M5-preview side-by-side view). MediaPipe world axes follow the
+    camera, so the real camera looks exactly along -X (EKAGRATA world) from the hips: yaw 0 = matched view,
+    any other yaw = alternative viewpoint."""
+
+    distance_m: float  # horizontal distance hips -> camera lens (tape measure)
+    height_m: float  # camera lens height minus hip height (tape measure; negative if the camera is lower)
+    yaw_deg: float  # 0 = matched; otherwise an alternative viewpoint rotated about +Z around the hips
+    horizontal_fov_deg: float  # real camera's horizontal field of view (measure: docs/blender.md)
+
+
+@dataclass(frozen=True)
 class BlenderConfig:
     """Blender raw camera shadow (M5-preview): Blender binary, UDP link and figure placement."""
 
@@ -140,6 +161,7 @@ class BlenderConfig:
     hitting_side: str  # one of HITTING_SIDES
     landmarks: tuple  # landmark names (keys of ekagrata.vision.landmark_map.LM)
     placement_offset_m: tuple  # (3,) display offset of the figure on the court, metres
+    matched_camera: MatchedCamera  # side-by-side view camera placement
 
 
 def load_blender_config(path) -> BlenderConfig:
@@ -163,4 +185,20 @@ def load_blender_config(path) -> BlenderConfig:
     data["send_rate_max_hz"] = float(data["send_rate_max_hz"])
     data["landmarks"] = tuple(data["landmarks"])
     data["placement_offset_m"] = tuple(float(x) for x in data["placement_offset_m"])
+    data["matched_camera"] = _load_matched_camera(path, data["matched_camera"])
     return BlenderConfig(**data)
+
+
+def _load_matched_camera(path, mc) -> MatchedCamera:
+    if not isinstance(mc, dict):
+        raise ConfigError(f"{path}: 'matched_camera' must be a mapping, got {mc!r}")
+    _check_keys(f"{path} [matched_camera]", mc, MatchedCamera)
+    number = (int, float)
+    _require(path, "matched_camera.distance_m", mc["distance_m"], number, lambda v: v > 0, "must be > 0")
+    _require(path, "matched_camera.height_m", mc["height_m"], number, lambda v: -5 < v < 5,
+             "must be in (-5, 5) m")
+    _require(path, "matched_camera.yaw_deg", mc["yaw_deg"], number, lambda v: -180 < v <= 180,
+             "must be in (-180, 180]")
+    _require(path, "matched_camera.horizontal_fov_deg", mc["horizontal_fov_deg"], number,
+             lambda v: 1 < v < 179, "must be in (1, 179) degrees")
+    return MatchedCamera(**{k: float(v) for k, v in mc.items()})

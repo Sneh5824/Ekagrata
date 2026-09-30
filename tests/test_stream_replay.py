@@ -138,7 +138,9 @@ def test_main_replay_end_to_end(tmp_path, capsys):
     cfg.write_text(
         'blender_exe: "unused.exe"\nblender_version: "5.0.1"\nudp_host: 127.0.0.1\n'
         f"udp_port: {rx.getsockname()[1]}\nsend_rate_max_hz: 1000\nhitting_side: right\n"
-        "landmarks: [r_shoulder, r_wrist]\nplacement_offset_m: [0, 0, 0]\n", encoding="utf-8")
+        "landmarks: [r_shoulder, r_wrist]\nplacement_offset_m: [0, 0, 0]\n"
+        "matched_camera: {distance_m: 2.5, height_m: 0.3, yaw_deg: 0, horizontal_fov_deg: 70}\n",
+        encoding="utf-8")
     rc = stream.main(["--session", str(d), "--config", str(cfg), "--camera-config",
                       str(REPO / "configs" / "camera.yaml")])
     msgs = [decode(rx.recv(65535)) for _ in range(16)]
@@ -169,3 +171,16 @@ def test_stage_durations_known_answers():
     report = "\n".join(stream.stage_report(rows))
     assert "queue wait / frame interval: median 0.18" in report  # 6 ms / 33 ms
     assert stream.stage_report([]) == ["(no messages sent: no latency rows)"]
+
+
+def test_record_and_preview_argument_rules():
+    with pytest.raises(SystemExit):
+        stream.parse_args(["--record", "run1"])  # needs --athlete
+    with pytest.raises(SystemExit):
+        stream.parse_args(["--session", "x", "--record", "run1", "--athlete", "002"])  # live only
+    with pytest.raises(SystemExit):
+        stream.parse_args(["--preview-geometry", "0", "0", "640", "360"])  # needs --preview
+    args = stream.parse_args(["--preview", "--preview-geometry", "0", "0", "640", "360", "--record", "run1",
+                              "--athlete", "002"])
+    assert args.preview_geometry == [0, 0, 640, 360] and args.record == "run1"
+    assert stream.PREVIEW_WINDOW == "EKAGRATA camera"

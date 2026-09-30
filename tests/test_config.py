@@ -132,6 +132,11 @@ send_rate_max_hz: 60
 hitting_side: right
 landmarks: [nose, r_wrist]
 placement_offset_m: [-4, 0, 1.0]
+matched_camera:
+  distance_m: 2.5
+  height_m: 0.3
+  yaw_deg: 0
+  horizontal_fov_deg: 70
 """
 
 
@@ -150,6 +155,18 @@ def test_blender_valid_minimal(tmp_path):
     cfg = load_blender_config(write_blender(tmp_path, BLENDER_VALID))
     assert cfg.landmarks == ("nose", "r_wrist") and cfg.placement_offset_m == (-4.0, 0.0, 1.0)
     assert cfg.send_rate_max_hz == 60.0
+    mc = cfg.matched_camera
+    assert (mc.distance_m, mc.height_m, mc.yaw_deg, mc.horizontal_fov_deg) == (2.5, 0.3, 0.0, 70.0)
+    assert isinstance(mc.yaw_deg, float)
+
+
+def test_camera_tilt_fields_default_and_validation(tmp_path):
+    cfg = load_camera_config(write(tmp_path, VALID))
+    assert (cfg.camera_pitch_deg, cfg.camera_roll_deg) == (0.0, 0.0)
+    cfg = load_camera_config(write(tmp_path, VALID + "camera_pitch_deg: 12\ncamera_roll_deg: -3.5\n"))
+    assert (cfg.camera_pitch_deg, cfg.camera_roll_deg) == (12.0, -3.5)
+    with pytest.raises(ConfigError, match="camera_pitch_deg"):
+        load_camera_config(write(tmp_path, VALID + "camera_pitch_deg: 95\n"))
 
 
 @pytest.mark.parametrize("old,new,match", [
@@ -162,6 +179,12 @@ def test_blender_valid_minimal(tmp_path):
     ("placement_offset_m: [-4, 0, 1.0]", "placement_offset_m: [0, 1]", "placement_offset_m"),
     ("placement_offset_m: [-4, 0, 1.0]", "placement_offset_m: [0, 1, true]", "placement_offset_m"),
     ('blender_version: "5.0.1"', "", "missing"),
+    ("  distance_m: 2.5", "  distance_m: 0", "distance_m"),
+    ("  horizontal_fov_deg: 70", "  horizontal_fov_deg: 180", "horizontal_fov_deg"),
+    ("  yaw_deg: 0", "  yaw_deg: -180", "yaw_deg"),
+    ("  yaw_deg: 0", "  yaw_deg: 0\n  pitch_deg: 3", "unknown key"),
+    ("matched_camera:\n  distance_m: 2.5\n  height_m: 0.3\n  yaw_deg: 0\n  horizontal_fov_deg: 70\n",
+     "matched_camera: 3\n", "matched_camera"),
 ])
 def test_blender_invalid(tmp_path, old, new, match):
     with pytest.raises(ConfigError, match=match):
